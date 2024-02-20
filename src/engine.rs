@@ -1,18 +1,17 @@
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::CellBoard;
-use battlesnake_game_types::compact_representation::{CellNum, StandardCellBoard4Snakes11x11};
+use battlesnake_game_types::compact_representation::CellNum;
 use battlesnake_game_types::types::{
-    FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-    ReasonableMovesGame, SimulableGame, SimulatorInstruments, SizeDeterminableGame,
-    SnakeIDGettableGame, SnakeId, VictorDeterminableGame, YouDeterminableGame,
+    Action, FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
+    ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeId,
+    VictorDeterminableGame, YouDeterminableGame,
 };
 use std::time::Duration;
-use tracing::info;
 
 pub fn calc_move<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
 ) -> Move {
-    let mut reasonable_moves = cellboard.reasonable_moves_for_each_snake();
+    let reasonable_moves = cellboard.reasonable_moves_for_each_snake();
     let you = cellboard.you_id();
     search_paranoid_minimax(cellboard, 3, &you)
 }
@@ -34,14 +33,52 @@ pub fn search_paranoid_minimax<
     depth: usize,
     you: &SnakeId,
 ) -> Move {
-    let mut reasonable_moves = cellboard.reasonable_moves_for_each_snake();
-    let mut best_move = Move::Down;
+    let reasonable_moves = cellboard.reasonable_moves_for_each_snake();
     let simulated_boards = cellboard.simulate_with_moves(&Simulator {}, reasonable_moves);
     simulated_boards
         .map(|(action, a)| (evaluate_board(a, you), (action, a)))
         .max_by(|(e, _), (other_e, _)| e.total_cmp(other_e))
         .map(|(_, (action, _))| action.own_move())
         .unwrap_or(Move::Down)
+}
+
+struct Node<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> {
+    board: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    actions: Vec<Action<MAX_SNAKES>>,
+    value: f32,
+}
+
+fn paranoid_min_value<
+    T: CellNum,
+    D: Dimensions,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
+    cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    depth: usize,
+    snake_ids: &[SnakeId],
+) -> f32 {
+    let mut value = f32::INFINITY;
+    let mut current_board = cellboard;
+    value
+}
+
+/// Given a state and a player id returns a list of boards with the next possible reasonable moves of that player.
+fn next_boards<
+    T: CellNum,
+    D: Dimensions + 'static,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
+    cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    player: &SnakeId,
+) -> Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> {
+    let mut reasonable_moves = cellboard
+        .reasonable_moves_for_each_snake()
+        .filter(|(id, _)| id == player);
+    cellboard
+        .simulate_with_moves(&Simulator {}, reasonable_moves)
+        .collect()
 }
 
 fn evaluate_board<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
@@ -98,9 +135,7 @@ fn evaluate_for_player<
 struct Simulator {}
 
 impl SimulatorInstruments for Simulator {
-    fn observe_simulation(&self, d: Duration) {
-        info!("Simulation took {:?}", d);
-    }
+    fn observe_simulation(&self, _d: Duration) {}
 }
 
 pub fn is_lost<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
@@ -115,4 +150,16 @@ pub fn is_won<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAK
     you: &SnakeId,
 ) -> bool {
     cellboard.get_winner() == Some(*you)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode_state;
+
+    fn test_board() -> StandardCellBoard4Snakes11x11 {
+        let mut board = r##"{"game":{"id":"7417b69a-bbe9-47f3-b88b-db0e7e33cd48","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":51,"board":{"height":11,"width":11,"snakes":[{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_RpJkFVGrG6W68bhQMxp6G738","name":"Hungry Bot","latency":"1","health":97,"body":[{"x":7,"y":0},{"x":6,"y":0},{"x":5,"y":0},{"x":4,"y":0},{"x":4,"y":1},{"x":4,"y":2},{"x":3,"y":2},{"x":2,"y":2},{"x":1,"y":2},{"x":0,"y":2},{"x":0,"y":3}],"head":{"x":7,"y":0},"length":11,"shout":"","squad":"","customizations":{"color":"#00cc00","head":"alligator","tail":"alligator"}}],"food":[{"x":7,"y":9}],"hazards":[]},"you":{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##;
+        let g = decode_state(board.to_string());
+        g.unwrap()
+    }
 }
