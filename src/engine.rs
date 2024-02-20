@@ -77,12 +77,11 @@ fn evaluate_for_player<
             .map(|&f| head.sub_vec(f.to_vector()).manhattan_length())
             .sum::<u32>()
             .checked_div(food.len() as u32)
-            .unwrap_or(0) as f32;
-        #[cfg(debug_assertions)]
-        info!("Food distance avg: {}", food_distance_avg);
+            .unwrap_or(0) as f32
+            / 3.0;
         -food_distance_avg
             + cellboard.get_health(you) as f32 / 10.0
-            + cellboard.get_length(you) as f32 / 10.0
+            + cellboard.get_length(you) as f32
             - other_ids
                 .iter()
                 .filter(|&id| id != you)
