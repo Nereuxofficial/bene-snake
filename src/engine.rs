@@ -74,11 +74,14 @@ fn evaluate_for_player<
         // Favor positions closer to food
         let food_distance_avg = food
             .iter()
-            .map(|&f| (head.manhattan_length() as i32 - f.manhattan_length() as i32).unsigned_abs())
+            .map(|&f| head.sub_vec(f.to_vector()).manhattan_length())
             .sum::<u32>()
-            / food.len() as u32;
-        food_distance_avg as f32
-            + cellboard.get_health(you) as f32 / 100.0
+            .checked_div(food.len() as u32)
+            .unwrap_or(0) as f32;
+        #[cfg(debug_assertions)]
+        info!("Food distance avg: {}", food_distance_avg);
+        -food_distance_avg
+            + cellboard.get_health(you) as f32 / 10.0
             + cellboard.get_length(you) as f32 / 10.0
             - other_ids
                 .iter()
