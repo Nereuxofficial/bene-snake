@@ -35,11 +35,9 @@ fn decode_state(
 
 #[debug_handler]
 async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
-    #[cfg(debug_assertions)]
     let start = std::time::Instant::now();
     let cellboard = decode_state(body, game_states).unwrap();
     let chosen_move = engine::calc_move(cellboard).to_string();
-    #[cfg(debug_assertions)]
     info!("Calculation took: {:?}", start.elapsed());
     Json(json!({"move": chosen_move}))
 }
