@@ -13,7 +13,7 @@ tracing-subscriber = "0.3.17"
 dotenvy = "0.15.7"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7.4", features = ["macros"] }
-battlesnake-game-types = { path = "battlesnake-game-types" }
+battlesnake-game-types = "0.17.0"
 serde = "1.0.196"
 simd-json = "0.13.8"
 serde_json = "1.0.113"
