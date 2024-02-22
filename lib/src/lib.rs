@@ -1,23 +1,52 @@
-use crate::get_move;
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
-use battlesnake_game_types::compact_representation::standard::CellBoard;
+use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
 use battlesnake_game_types::compact_representation::CellNum;
 use battlesnake_game_types::types::{
     Action, FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-    ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeId,
-    VictorDeterminableGame, YouDeterminableGame,
+    ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeIDMap,
+    SnakeId, VictorDeterminableGame, YouDeterminableGame,
 };
-use rayon::prelude::*;
-use std::cmp::Ordering;
+use battlesnake_game_types::wire_representation::Game;
+use std::borrow::Cow;
+use std::cmp::{max, Ordering};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::info;
 
-pub fn calc_move<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
+pub type GameStates = Arc<Mutex<HashMap<String, SnakeIDMap>>>;
+
+pub fn decode_state(
+    mut text: String,
+    game_states: GameStates,
+) -> color_eyre::Result<CellBoard4Snakes11x11> {
+    #[cfg(debug_assertions)]
+    info!("JSON: {}", text);
+    let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
+    let cellboard = decoded
+        .as_cell_board(
+            game_states
+                .lock()
+                .unwrap()
+                .get(&decoded.game.id)
+                .expect("No such game id found"),
+        )
+        .unwrap();
+    Ok(cellboard)
+}
+
+pub fn calc_move<
+    T: CellNum + Send,
+    D: Dimensions + Send + 'static,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    depth: usize,
 ) -> Move {
-    let reasonable_moves = cellboard.reasonable_moves_for_each_snake();
     let you = cellboard.you_id();
-    paranoid_minimax(cellboard, 3, you, true).1
+    let snake_ids = cellboard.get_snake_ids();
+    paranoid_minimax(cellboard, depth, *you, true, Cow::Owned(snake_ids)).1
 }
 
 /// Given a cellboard, a depth and a SnakeId, this function will search for the best move
@@ -28,31 +57,75 @@ pub fn calc_move<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_S
 /// We then simulate the next opponent moves and pick the least favorable outcome for us.
 /// Repeat until there are no more opponents left on the current board.
 /// In Paranoid Minimax, we want to maximize our own score and minimize the score of our opponents.
-fn paranoid_minimax<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
+fn paranoid_minimax<
+    T: CellNum + Send + 'static,
+    D: Dimensions + Send + 'static,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
     game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     depth: usize,
-    you: &SnakeId,
+    you: SnakeId,
     top_level: bool,
+    snake_ids: Cow<Vec<SnakeId>>,
 ) -> (f32, Move) {
-    if is_lost(game, you) {
+    if is_lost(game, &you) {
         return (f32::NEG_INFINITY, Move::Down);
     }
-    if is_won(game, you) {
+    if is_won(game, &you) {
         return (f32::INFINITY, Move::Down);
     }
     if depth == 0 {
-        return (evaluate_board(game, you), Move::Down);
+        return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
-    let mut simulations = game.simulate(&Simulator {}, game.get_snake_ids());
-
-    let recursive_scores: Vec<(f32, Move)> = simulations
-        .map(|(action, b)| {
-            (
-                paranoid_minimax(b, depth - 1, you, false).0,
-                action.own_move(),
-            )
-        })
-        .collect();
+    let mut simulations = game.simulate(&Simulator {}, snake_ids.to_vec());
+    let recursive_scores: Vec<(f32, Move)> = if !top_level {
+        simulations
+            .map(|(action, b)| {
+                (
+                    paranoid_minimax(b, depth - 1, you, false, snake_ids.clone()).0,
+                    action.own_move(),
+                )
+            })
+            .collect()
+    } else {
+        let simulation: Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> =
+            simulations.collect();
+        let count = simulation.len();
+        let mut scores = vec![];
+        let threads = rayon::current_num_threads();
+        let mut tasks = vec![];
+        // Distribute the work across the threads
+        // Split simulations into threads chunks
+        for chunk in simulation.chunks(max(count / threads, 1)) {
+            let chunk = chunk.to_vec();
+            let you = you.clone();
+            let snake_ids_clone = snake_ids.to_vec();
+            tasks.push(std::thread::spawn(move || {
+                chunk
+                    .into_iter()
+                    .map(|(action, b)| {
+                        (
+                            paranoid_minimax(
+                                b,
+                                depth - 1,
+                                you,
+                                false,
+                                Cow::Owned(snake_ids_clone.clone()),
+                            )
+                            .0,
+                            action.own_move(),
+                        )
+                    })
+                    .collect::<Vec<(f32, Move)>>()
+            }));
+        }
+        // Collect the results
+        for task in tasks {
+            scores.append(&mut task.join().unwrap());
+        }
+        scores
+    };
 
     let mut buckets = vec![vec![]; 4];
     for (score, mv) in recursive_scores.iter() {
@@ -72,34 +145,17 @@ fn paranoid_minimax<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MA
         .unwrap_or((f32::NEG_INFINITY, Move::Down))
 }
 
-/// Given a state and a player id returns a list of boards with the next possible reasonable moves of that player.
-fn next_boards_for_player<
-    T: CellNum,
-    D: Dimensions + 'static,
-    const BOARD_SIZE: usize,
-    const MAX_SNAKES: usize,
->(
-    cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    player: &SnakeId,
-) -> Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> {
-    let mut reasonable_moves = cellboard
-        .reasonable_moves_for_each_snake()
-        .filter(|(id, _)| id == player);
-    cellboard
-        .simulate_with_moves(&Simulator {}, reasonable_moves)
-        .collect()
-}
-
 fn evaluate_board<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     you: &SnakeId,
+    snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
-    evaluate_for_player(cellboard, you)
-        - cellboard
-            .get_snake_ids()
+    evaluate_for_player(cellboard, you, snake_ids.clone())
+        - snake_ids
+            .clone()
             .iter()
             .filter(|&id| id != you)
-            .map(|id| evaluate_for_player(cellboard, id))
+            .map(|id| evaluate_for_player(cellboard, id, snake_ids.clone()))
             .sum::<f32>()
             / 3.0
 }
@@ -112,28 +168,16 @@ fn evaluate_for_player<
 >(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     you: &SnakeId,
+    snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
     if cellboard.is_alive(you) {
-        let other_ids = cellboard.get_snake_ids();
-        let food = cellboard.get_all_food_as_positions();
         let head = cellboard.get_head_as_position(you);
-        // Favor positions closer to food
-        let food_distance_avg = food
-            .iter()
-            .map(|&f| head.sub_vec(f.to_vector()).manhattan_length())
-            .sum::<u32>()
-            .checked_div(food.len() as u32)
-            .unwrap_or(0) as f32
-            / 3.0;
-        -food_distance_avg
-            + cellboard.get_health(you) as f32 / 10.0
-            + cellboard.get_length(you) as f32
-            - other_ids
+
+        cellboard.get_health(you) as f32 / 10.0 + cellboard.get_length(you) as f32
+            - snake_ids
                 .iter()
                 .filter(|&id| id != you)
-                .map(|id| {
-                    cellboard.get_health(id) as f32 / 100.0 + cellboard.get_length(id) as f32 / 10.0
-                })
+                .map(|id| cellboard.get_health(id) as f32 / 10.0 + cellboard.get_length(id) as f32)
                 .sum::<f32>()
     } else {
         f32::MIN
@@ -187,13 +231,12 @@ mod tests {
     #[test]
     fn test_calc_move() {
         let board = test_board();
-        let mv = calc_move(board);
-        println!("{:?}", mv);
+        calc_move(board, 3);
     }
 
     #[test]
     fn dedup_vec() {
-        let mut v = vec![
+        let v = vec![
             (5.0, Move::Down),
             (10.0, Move::Down),
             (-5.0, Move::Down),

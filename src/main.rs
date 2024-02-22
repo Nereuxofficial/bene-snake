@@ -1,5 +1,3 @@
-mod engine;
-
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -7,37 +5,20 @@ use axum::{debug_handler, Json, Router};
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame, SnakeIDMap};
 use battlesnake_game_types::wire_representation::Game;
+use lib::{calc_move, decode_state, GameStates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tracing::info;
 
-type GameStates = Arc<Mutex<HashMap<String, SnakeIDMap>>>;
-
-fn decode_state(
-    mut text: String,
-    game_states: GameStates,
-) -> color_eyre::Result<CellBoard4Snakes11x11> {
-    #[cfg(debug_assertions)]
-    info!("JSON: {}", text);
-    let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
-    let cellboard = decoded
-        .as_cell_board(
-            game_states
-                .lock()
-                .unwrap()
-                .get(&decoded.game.id)
-                .expect("No such game id found"),
-        )
-        .unwrap();
-    Ok(cellboard)
-}
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[debug_handler]
 async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     let cellboard = decode_state(body, game_states).unwrap();
-    let chosen_move = engine::calc_move(cellboard).to_string();
+    let chosen_move = calc_move(cellboard, 4).to_string();
     info!("Calculation took: {:?}", start.elapsed());
     Json(json!({"move": chosen_move}))
 }
@@ -108,7 +89,7 @@ async fn main() -> color_eyre::Result<()> {
         "0.0.0.0:{}",
         std::env::var("PORT").expect("Please set the PORT environment variable")
     ))
-    .await?;
+        .await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
