@@ -99,7 +99,6 @@ fn paranoid_minimax<
         // Split simulations into threads chunks
         for chunk in simulation.chunks(max(count / threads, 1)) {
             let chunk = chunk.to_vec();
-            let you = you.clone();
             let snake_ids_clone = snake_ids.to_vec();
             tasks.push(std::thread::spawn(move || {
                 chunk
