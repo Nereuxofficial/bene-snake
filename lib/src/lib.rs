@@ -11,8 +11,11 @@ use std::borrow::Cow;
 use std::cmp::{max, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::time::MissedTickBehavior::Delay;
 use tracing::info;
+
+pub const DELAY: Duration = Duration::from_millis(150);
 
 pub type GameStates = Arc<Mutex<HashMap<String, SnakeIDMap>>>;
 
@@ -43,10 +46,20 @@ pub fn calc_move<
 >(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     depth: usize,
+    start: Instant,
 ) -> Move {
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
-    paranoid_minimax(cellboard, depth, *you, true, Cow::Owned(snake_ids)).1
+    let instant_ref = Arc::new(start);
+    paranoid_minimax(
+        cellboard,
+        depth,
+        *you,
+        true,
+        Cow::Owned(snake_ids),
+        instant_ref,
+    )
+    .1
 }
 
 /// Given a cellboard, a depth and a SnakeId, this function will search for the best move
@@ -68,6 +81,7 @@ fn paranoid_minimax<
     you: SnakeId,
     top_level: bool,
     snake_ids: Cow<Vec<SnakeId>>,
+    start: Arc<Instant>,
 ) -> (f32, Move) {
     if is_lost(game, &you) {
         return (f32::NEG_INFINITY, Move::Down);
@@ -75,7 +89,12 @@ fn paranoid_minimax<
     if is_won(game, &you) {
         return (f32::INFINITY, Move::Down);
     }
+    #[cfg(feature = "bench")]
     if depth == 0 {
+        return (evaluate_board(game, &you, snake_ids), Move::Down);
+    }
+    #[cfg(not(feature = "bench"))]
+    if depth == 0 || start.elapsed() + DELAY > Duration::from_millis(500) {
         return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
     let mut simulations = game.simulate(&Simulator {}, snake_ids.to_vec());
@@ -83,7 +102,7 @@ fn paranoid_minimax<
         simulations
             .map(|(action, b)| {
                 (
-                    paranoid_minimax(b, depth - 1, you, false, snake_ids.clone()).0,
+                    paranoid_minimax(b, depth - 1, you, false, snake_ids.clone(), start.clone()).0,
                     action.own_move(),
                 )
             })
@@ -100,6 +119,7 @@ fn paranoid_minimax<
         for chunk in simulation.chunks(max(count / threads, 1)) {
             let chunk = chunk.to_vec();
             let snake_ids_clone = snake_ids.to_vec();
+            let start_clone = start.clone();
             tasks.push(std::thread::spawn(move || {
                 chunk
                     .into_iter()
@@ -111,6 +131,7 @@ fn paranoid_minimax<
                                 you,
                                 false,
                                 Cow::Owned(snake_ids_clone.clone()),
+                                start_clone.clone(),
                             )
                             .0,
                             action.own_move(),

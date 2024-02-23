@@ -2,7 +2,6 @@ use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{debug_handler, Json, Router};
-use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame, SnakeIDMap};
 use battlesnake_game_types::wire_representation::Game;
 use lib::{calc_move, decode_state, GameStates};
@@ -18,7 +17,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     let cellboard = decode_state(body, game_states).unwrap();
-    let chosen_move = calc_move(cellboard, 4).to_string();
+    let chosen_move = calc_move(cellboard, 10, start).to_string();
     info!("Calculation took: {:?}", start.elapsed());
     Json(json!({"move": chosen_move}))
 }
@@ -89,7 +88,7 @@ async fn main() -> color_eyre::Result<()> {
         "0.0.0.0:{}",
         std::env::var("PORT").expect("Please set the PORT environment variable")
     ))
-        .await?;
+    .await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
