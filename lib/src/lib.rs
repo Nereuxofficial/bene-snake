@@ -2,9 +2,8 @@ use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
 use battlesnake_game_types::compact_representation::CellNum;
 use battlesnake_game_types::types::{
-    Action, FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-    ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeIDMap,
-    SnakeId, VictorDeterminableGame, YouDeterminableGame,
+    Action, HealthGettableGame, LengthGettableGame, Move, SimulableGame, SimulatorInstruments,
+    SnakeIDGettableGame, SnakeIDMap, SnakeId, VictorDeterminableGame, YouDeterminableGame,
 };
 use battlesnake_game_types::wire_representation::Game;
 use std::borrow::Cow;
@@ -12,7 +11,7 @@ use std::cmp::{max, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::time::MissedTickBehavior::Delay;
+#[cfg(debug_assertions)]
 use tracing::info;
 
 pub const DELAY: Duration = Duration::from_millis(150);
@@ -97,7 +96,7 @@ fn paranoid_minimax<
     if depth == 0 || start.elapsed() + DELAY > Duration::from_millis(500) {
         return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
-    let mut simulations = game.simulate(&Simulator {}, snake_ids.to_vec());
+    let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
     let recursive_scores: Vec<(f32, Move)> = if !top_level {
         simulations
             .map(|(action, b)| {
@@ -165,7 +164,12 @@ fn paranoid_minimax<
         .unwrap_or((f32::NEG_INFINITY, Move::Down))
 }
 
-fn evaluate_board<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
+pub fn evaluate_board<
+    T: CellNum,
+    D: Dimensions,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
@@ -190,22 +194,16 @@ fn evaluate_for_player<
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
-    if cellboard.is_alive(you) {
-        let head = cellboard.get_head_as_position(you);
-
-        cellboard.get_health(you) as f32 / 10.0 + cellboard.get_length(you) as f32
-            - snake_ids
-                .iter()
-                .filter(|&id| id != you)
-                .map(|id| cellboard.get_health(id) as f32 / 10.0 + cellboard.get_length(id) as f32)
-                .sum::<f32>()
-    } else {
-        f32::MIN
-    }
+    cellboard.get_health(you) as f32 / 10.0 + cellboard.get_length(you) as f32
+        - snake_ids
+            .iter()
+            .filter(|&id| id != you)
+            .map(|id| cellboard.get_health(id) as f32 / 10.0 + cellboard.get_length(id) as f32)
+            .sum::<f32>()
 }
 
 #[derive(Debug)]
-struct Simulator {}
+pub struct Simulator {}
 
 impl SimulatorInstruments for Simulator {
     fn observe_simulation(&self, _d: Duration) {}
@@ -233,12 +231,12 @@ mod tests {
     use battlesnake_game_types::types::build_snake_id_map;
     use battlesnake_game_types::wire_representation::Game;
     use simd_json::prelude::ArrayTrait;
-    use std::cmp::{min, Ordering};
+    use std::cmp::Ordering;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     fn test_board() -> StandardCellBoard4Snakes11x11 {
-        let mut board = r##"{"game":{"id":"7417b69a-bbe9-47f3-b88b-db0e7e33cd48","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":51,"board":{"height":11,"width":11,"snakes":[{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_RpJkFVGrG6W68bhQMxp6G738","name":"Hungry Bot","latency":"1","health":97,"body":[{"x":7,"y":0},{"x":6,"y":0},{"x":5,"y":0},{"x":4,"y":0},{"x":4,"y":1},{"x":4,"y":2},{"x":3,"y":2},{"x":2,"y":2},{"x":1,"y":2},{"x":0,"y":2},{"x":0,"y":3}],"head":{"x":7,"y":0},"length":11,"shout":"","squad":"","customizations":{"color":"#00cc00","head":"alligator","tail":"alligator"}}],"food":[{"x":7,"y":9}],"hazards":[]},"you":{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##;
+        let board = r##"{"game":{"id":"7417b69a-bbe9-47f3-b88b-db0e7e33cd48","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":51,"board":{"height":11,"width":11,"snakes":[{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_RpJkFVGrG6W68bhQMxp6G738","name":"Hungry Bot","latency":"1","health":97,"body":[{"x":7,"y":0},{"x":6,"y":0},{"x":5,"y":0},{"x":4,"y":0},{"x":4,"y":1},{"x":4,"y":2},{"x":3,"y":2},{"x":2,"y":2},{"x":1,"y":2},{"x":0,"y":2},{"x":0,"y":3}],"head":{"x":7,"y":0},"length":11,"shout":"","squad":"","customizations":{"color":"#00cc00","head":"alligator","tail":"alligator"}}],"food":[{"x":7,"y":9}],"hazards":[]},"you":{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##;
         let mut hm = HashMap::new();
         hm.insert(
             "7417b69a-bbe9-47f3-b88b-db0e7e33cd48".to_string(),
@@ -251,7 +249,7 @@ mod tests {
     #[test]
     fn test_calc_move() {
         let board = test_board();
-        calc_move(board, 3);
+        calc_move(board, 3, Instant::now());
     }
 
     #[test]

@@ -1,20 +1,23 @@
 use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
-use battlesnake_game_types::types::build_snake_id_map;
+use battlesnake_game_types::types::{build_snake_id_map, SnakeIDMap, YouDeterminableGame};
 use battlesnake_game_types::wire_representation::Game;
-use lib::decode_state;
+use lib::{decode_state, evaluate_board};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-fn gen_test_board(string: &mut str) -> StandardCellBoard4Snakes11x11 {
+fn gen_test_board(string: &mut str) -> (StandardCellBoard4Snakes11x11, SnakeIDMap) {
     let mut string_clone = string.to_string();
     let board: Game = unsafe { simd_json::from_str(string_clone.as_mut_str()).unwrap() };
     let mut hm = HashMap::new();
-    hm.insert(board.game.id.to_string(), build_snake_id_map(&board));
-    let g = decode_state(string.to_string(), Arc::new(Mutex::new(hm)));
-    g.unwrap()
+    let snake_id_map = build_snake_id_map(&board);
+    hm.insert(board.game.id.to_string(), snake_id_map.clone());
+    let g = decode_state(string.to_string(), Arc::new(Mutex::new(hm))).unwrap();
+    (g, snake_id_map)
 }
 
-fn test_boards() -> Vec<StandardCellBoard4Snakes11x11> {
+fn test_boards() -> Vec<(StandardCellBoard4Snakes11x11, SnakeIDMap)> {
     let mut boards = vec![];
     let input_strings = [
         r##"{"game":{"id":"3c542096-07eb-439b-aab7-0c2b9aaac58c","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":0,"board":{"height":11,"width":11,"snakes":[{"id":"gs_3fHj37VrM4xJBj8YTMc9B6gQ","name":"bene-snake-dev","latency":"","health":100,"body":[{"x":1,"y":9},{"x":1,"y":9},{"x":1,"y":9}],"head":{"x":1,"y":9},"length":3,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_3CVfr7jCv7T6SXwrp8hJrY39","name":"Snaker","latency":"","health":100,"body":[{"x":1,"y":1},{"x":1,"y":1},{"x":1,"y":1}],"head":{"x":1,"y":1},"length":3,"shout":"","squad":"","customizations":{"color":"#0040ff","head":"earmuffs","tail":"bolt"}},{"id":"gs_m8hBvHF4pB8Ybdb6FYVpPdSG","name":"DefenderSnake","latency":"","health":100,"body":[{"x":9,"y":9},{"x":9,"y":9},{"x":9,"y":9}],"head":{"x":9,"y":9},"length":3,"shout":"","squad":"","customizations":{"color":"#ff0000","head":"tongue","tail":"weight"}},{"id":"gs_9qTMgCbQRxX8VDwbHD79xb3X","name":"new myfirstSnake();","latency":"","health":100,"body":[{"x":9,"y":1},{"x":9,"y":1},{"x":9,"y":1}],"head":{"x":9,"y":1},"length":3,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}],"food":[{"x":2,"y":10},{"x":2,"y":0},{"x":8,"y":10},{"x":10,"y":2},{"x":5,"y":5}],"hazards":[]},"you":{"id":"gs_3fHj37VrM4xJBj8YTMc9B6gQ","name":"bene-snake-dev","latency":"","health":100,"body":[{"x":1,"y":9},{"x":1,"y":9},{"x":1,"y":9}],"head":{"x":1,"y":9},"length":3,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##,
@@ -37,7 +40,7 @@ fn main() {
 fn test_calc_move_depth_3() {
     let boards = test_boards();
     for board in boards.iter() {
-        lib::calc_move(*board, 3);
+        lib::calc_move(board.0, 3, Instant::now());
     }
 }
 
@@ -45,6 +48,18 @@ fn test_calc_move_depth_3() {
 fn test_calc_move_depth_4() {
     let boards = test_boards();
     for board in boards.iter() {
-        lib::calc_move(*board, 4);
+        lib::calc_move(board.0, 4, Instant::now());
+    }
+}
+
+#[divan::bench]
+fn bench_eval() {
+    let boards = test_boards();
+    for board in boards.iter() {
+        evaluate_board(
+            board.0,
+            board.0.you_id(),
+            Cow::Owned(board.1.values().copied().collect()),
+        );
     }
 }
