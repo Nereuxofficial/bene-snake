@@ -93,7 +93,7 @@ fn paranoid_minimax<
         return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
     #[cfg(not(feature = "bench"))]
-    if depth == 0 || start.elapsed() + DELAY > Duration::from_millis(500) {
+    if start.elapsed() + DELAY > Duration::from_millis(500) {
         return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
@@ -101,8 +101,12 @@ fn paranoid_minimax<
         simulations
             .map(|(action, b)| {
                 (
+                    #[cfg(feature = "bench")]
                     paranoid_minimax(b, depth - 1, you, false, snake_ids.clone(), start.clone()).0,
+                    #[cfg(not(feature = "bench"))]
+                    paranoid_minimax(b, depth, you, false, snake_ids.clone(), start.clone()).0,
                     action.own_move(),
+                    // TODO: Split this function into the multithreaded and single threaded versions
                 )
             })
             .collect()
