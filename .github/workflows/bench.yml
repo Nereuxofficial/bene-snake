@@ -34,4 +34,4 @@ jobs:
         uses: Swatinem/rust-cache@v2.0.1
 
       - name: Run cargo bench
-        run: cd lib && cargo bench
+        run: cd lib && cargo bench --features bench

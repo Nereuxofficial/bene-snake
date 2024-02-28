@@ -81,3 +81,6 @@ jobs:
 
       - name: Run cargo clippy --package bene-snake --all-targets
         run: cargo clippy --package bene-snake --all-targets
+
+      - name: Run cargo clippy --package lib --all-targets
+        run: cargo clippy --features bench --package lib --all-targets
