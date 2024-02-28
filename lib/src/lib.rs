@@ -95,6 +95,7 @@ fn paranoid_minimax<
             simulations.collect();
         let count = simulation.len();
         let mut scores = Vec::with_capacity(count);
+        // TODO: rayon is a bit overkill for getting the number of threads, replace it with something else
         let threads = rayon::current_num_threads();
         let mut tasks = Vec::with_capacity(threads);
         // Distribute the work across the threads
@@ -178,9 +179,16 @@ pub fn paranoid_minimax_single_threaded<
         .map(|(action, b)| {
             (
                 #[cfg(feature = "bench")]
-                paranoid_minimax(b, depth - 1, you, snake_ids.clone(), start.clone()).0,
+                paranoid_minimax_single_threaded(
+                    b,
+                    depth - 1,
+                    you,
+                    snake_ids.clone(),
+                    start.clone(),
+                )
+                .0,
                 #[cfg(not(feature = "bench"))]
-                paranoid_minimax(b, depth, you, snake_ids.clone(), start.clone()).0,
+                paranoid_minimax_single_threaded(b, depth, you, snake_ids.clone(), start.clone()).0,
                 action.own_move(),
             )
         })
@@ -259,7 +267,6 @@ mod tests {
     use simd_json::prelude::ArrayTrait;
     use std::cmp::Ordering;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     fn test_board() -> StandardCellBoard4Snakes11x11 {
         let board = r##"{"game":{"id":"7417b69a-bbe9-47f3-b88b-db0e7e33cd48","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":51,"board":{"height":11,"width":11,"snakes":[{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_RpJkFVGrG6W68bhQMxp6G738","name":"Hungry Bot","latency":"1","health":97,"body":[{"x":7,"y":0},{"x":6,"y":0},{"x":5,"y":0},{"x":4,"y":0},{"x":4,"y":1},{"x":4,"y":2},{"x":3,"y":2},{"x":2,"y":2},{"x":1,"y":2},{"x":0,"y":2},{"x":0,"y":3}],"head":{"x":7,"y":0},"length":11,"shout":"","squad":"","customizations":{"color":"#00cc00","head":"alligator","tail":"alligator"}}],"food":[{"x":7,"y":9}],"hazards":[]},"you":{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##;
