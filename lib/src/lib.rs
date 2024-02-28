@@ -11,6 +11,8 @@ use std::cmp::{max, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[allow(unused_imports)]
+use tracing::info;
 #[cfg(debug_assertions)]
 use tracing::info;
 
@@ -50,15 +52,7 @@ pub fn calc_move<
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
     let instant_ref = Arc::new(start);
-    paranoid_minimax(
-        cellboard,
-        depth,
-        *you,
-        true,
-        Cow::Owned(snake_ids),
-        instant_ref,
-    )
-    .1
+    paranoid_minimax(cellboard, depth, *you, Cow::Owned(snake_ids), instant_ref).1
 }
 
 /// Given a cellboard, a depth and a SnakeId, this function will search for the best move
@@ -78,7 +72,6 @@ fn paranoid_minimax<
     game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     depth: usize,
     you: SnakeId,
-    top_level: bool,
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
 ) -> (f32, Move) {
@@ -97,20 +90,7 @@ fn paranoid_minimax<
         return (evaluate_board(game, &you, snake_ids), Move::Down);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move)> = if !top_level {
-        simulations
-            .map(|(action, b)| {
-                (
-                    #[cfg(feature = "bench")]
-                    paranoid_minimax(b, depth - 1, you, false, snake_ids.clone(), start.clone()).0,
-                    #[cfg(not(feature = "bench"))]
-                    paranoid_minimax(b, depth, you, false, snake_ids.clone(), start.clone()).0,
-                    action.own_move(),
-                    // TODO: Split this function into the multithreaded and single threaded versions
-                )
-            })
-            .collect()
-    } else {
+    let recursive_scores: Vec<(f32, Move)> = {
         let simulation: Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> =
             simulations.collect();
         let count = simulation.len();
@@ -128,11 +108,10 @@ fn paranoid_minimax<
                     .into_iter()
                     .map(|(action, b)| {
                         (
-                            paranoid_minimax(
+                            paranoid_minimax_single_threaded(
                                 b,
                                 depth - 1,
                                 you,
-                                false,
                                 Cow::Owned(snake_ids_clone.clone()),
                                 start_clone.clone(),
                             )
@@ -151,6 +130,62 @@ fn paranoid_minimax<
     };
 
     let mut buckets = vec![vec![]; 4];
+    for (score, mv) in recursive_scores.iter() {
+        buckets[mv.as_index()].push((score, mv));
+    }
+    buckets
+        .iter()
+        .filter_map(|bucket| {
+            bucket.iter().min_by(|(score, _), (other_score, _)| {
+                score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
+            })
+        })
+        .max_by(|(score, _), (other_score, _)| {
+            score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
+        })
+        .map(|(&score, &mv)| (score, mv))
+        .unwrap_or((f32::NEG_INFINITY, Move::Down))
+}
+
+pub fn paranoid_minimax_single_threaded<
+    T: CellNum + Send + 'static,
+    D: Dimensions + Send + 'static,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
+    game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    depth: usize,
+    you: SnakeId,
+    snake_ids: Cow<Vec<SnakeId>>,
+    start: Arc<Instant>,
+) -> (f32, Move) {
+    if is_won(game, &you) {
+        return (f32::INFINITY, Move::Down);
+    }
+    if !game.is_alive(&you) {
+        return (f32::NEG_INFINITY, Move::Down);
+    }
+    #[cfg(feature = "bench")]
+    if depth == 0 {
+        return (evaluate_board(game, &you, snake_ids), Move::Down);
+    }
+    #[cfg(not(feature = "bench"))]
+    if start.elapsed() + DELAY > Duration::from_millis(500) {
+        return (evaluate_board(game, &you, snake_ids), Move::Down);
+    }
+    let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
+    let recursive_scores: Vec<(f32, Move)> = simulations
+        .map(|(action, b)| {
+            (
+                #[cfg(feature = "bench")]
+                paranoid_minimax(b, depth - 1, you, snake_ids.clone(), start.clone()).0,
+                #[cfg(not(feature = "bench"))]
+                paranoid_minimax(b, depth, you, snake_ids.clone(), start.clone()).0,
+                action.own_move(),
+            )
+        })
+        .collect();
+    let mut buckets = [vec![], vec![], vec![], vec![]];
     for (score, mv) in recursive_scores.iter() {
         buckets[mv.as_index()].push((score, mv));
     }
@@ -224,7 +259,7 @@ mod tests {
     use simd_json::prelude::ArrayTrait;
     use std::cmp::Ordering;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn test_board() -> StandardCellBoard4Snakes11x11 {
         let board = r##"{"game":{"id":"7417b69a-bbe9-47f3-b88b-db0e7e33cd48","ruleset":{"name":"standard","version":"v1.2.3","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0,"hazardMap":"","hazardMapAuthor":"","royale":{"shrinkEveryNTurns":0},"squad":{"allowBodyCollisions":false,"sharedElimination":false,"sharedHealth":false,"sharedLength":false}}},"map":"standard","timeout":500,"source":"custom"},"turn":51,"board":{"height":11,"width":11,"snakes":[{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}},{"id":"gs_RpJkFVGrG6W68bhQMxp6G738","name":"Hungry Bot","latency":"1","health":97,"body":[{"x":7,"y":0},{"x":6,"y":0},{"x":5,"y":0},{"x":4,"y":0},{"x":4,"y":1},{"x":4,"y":2},{"x":3,"y":2},{"x":2,"y":2},{"x":1,"y":2},{"x":0,"y":2},{"x":0,"y":3}],"head":{"x":7,"y":0},"length":11,"shout":"","squad":"","customizations":{"color":"#00cc00","head":"alligator","tail":"alligator"}}],"food":[{"x":7,"y":9}],"hazards":[]},"you":{"id":"gs_RxF4j7TSMMPr3t4qSxSJyHjP","name":"bene-snake-dev","latency":"104","health":93,"body":[{"x":7,"y":4},{"x":6,"y":4},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":5,"y":5},{"x":6,"y":5}],"head":{"x":7,"y":4},"length":7,"shout":"","squad":"","customizations":{"color":"#888888","head":"default","tail":"default"}}}"##;
