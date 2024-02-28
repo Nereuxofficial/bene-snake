@@ -82,11 +82,11 @@ fn paranoid_minimax<
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
 ) -> (f32, Move) {
-    if is_lost(game, &you) {
-        return (f32::NEG_INFINITY, Move::Down);
-    }
     if is_won(game, &you) {
         return (f32::INFINITY, Move::Down);
+    }
+    if !game.is_alive(&you) {
+        return (f32::NEG_INFINITY, Move::Down);
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
@@ -114,9 +114,9 @@ fn paranoid_minimax<
         let simulation: Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> =
             simulations.collect();
         let count = simulation.len();
-        let mut scores = vec![];
+        let mut scores = Vec::with_capacity(count);
         let threads = rayon::current_num_threads();
-        let mut tasks = vec![];
+        let mut tasks = Vec::with_capacity(threads);
         // Distribute the work across the threads
         // Split simulations into threads chunks
         for chunk in simulation.chunks(max(count / threads, 1)) {
@@ -178,12 +178,12 @@ pub fn evaluate_board<
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
-    evaluate_for_player(cellboard, you, snake_ids.clone())
+    evaluate_for_player(cellboard, you)
         - snake_ids
             .clone()
             .iter()
             .filter(|&id| id != you)
-            .map(|id| evaluate_for_player(cellboard, id, snake_ids.clone()))
+            .map(|id| evaluate_for_player(cellboard, id))
             .sum::<f32>()
             / 3.0
 }
@@ -196,14 +196,8 @@ fn evaluate_for_player<
 >(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     you: &SnakeId,
-    snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
     cellboard.get_health(you) as f32 / 10.0 + cellboard.get_length(you) as f32
-        - snake_ids
-            .iter()
-            .filter(|&id| id != you)
-            .map(|id| cellboard.get_health(id) as f32 / 10.0 + cellboard.get_length(id) as f32)
-            .sum::<f32>()
 }
 
 #[derive(Debug)]
@@ -211,13 +205,6 @@ pub struct Simulator {}
 
 impl SimulatorInstruments for Simulator {
     fn observe_simulation(&self, _d: Duration) {}
-}
-
-pub fn is_lost<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
-    cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    you: &SnakeId,
-) -> bool {
-    !cellboard.is_alive(you)
 }
 
 pub fn is_won<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>(
