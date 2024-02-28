@@ -1,4 +1,4 @@
-name: CI
+name: Bench
 
 on:
   merge_group:
