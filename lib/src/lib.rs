@@ -13,8 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::info;
-#[cfg(debug_assertions)]
-use tracing::info;
 
 pub const DELAY: Duration = Duration::from_millis(150);
 
@@ -28,20 +26,14 @@ pub fn decode_state(
     info!("JSON: {}", text);
     let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
     let cellboard = decoded
-        .as_cell_board(
-            game_states
-                .lock()
-                .unwrap()
-                .get(&decoded.game.id)
-                .expect("No such game id found"),
-        )
+        .as_cell_board(HashMap::get(&game_states.lock().unwrap(), &decoded.game.id).unwrap())
         .unwrap();
     Ok(cellboard)
 }
 
 pub fn calc_move<
-    T: CellNum + Send,
-    D: Dimensions + Send + 'static,
+    T: CellNum + Send + Sync,
+    D: Dimensions + Send + Sync + Eq + 'static,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
@@ -64,8 +56,8 @@ pub fn calc_move<
 /// Repeat until there are no more opponents left on the current board.
 /// In Paranoid Minimax, we want to maximize our own score and minimize the score of our opponents.
 fn paranoid_minimax<
-    T: CellNum + Send + 'static,
-    D: Dimensions + Send + 'static,
+    T: CellNum + Send + 'static + Sync,
+    D: Dimensions + Send + Sync + Eq + 'static,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
@@ -149,8 +141,8 @@ fn paranoid_minimax<
 }
 
 pub fn paranoid_minimax_single_threaded<
-    T: CellNum + Send + 'static,
-    D: Dimensions + Send + 'static,
+    T: CellNum + Send + Sync + Eq + 'static,
+    D: Dimensions + Send + Sync + Eq + 'static,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
@@ -211,9 +203,11 @@ pub fn paranoid_minimax_single_threaded<
         .unwrap_or((f32::NEG_INFINITY, Move::Down))
 }
 
+// TODO: Cache the evaluate_board results more efficiently
+
 pub fn evaluate_board<
-    T: CellNum,
-    D: Dimensions,
+    T: CellNum + Sync + Send,
+    D: Dimensions + Eq + Send + Sync + 'static,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
