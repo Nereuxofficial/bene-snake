@@ -44,7 +44,7 @@ pub fn calc_move<
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
     let instant_ref = Arc::new(start);
-    paranoid_minimax(cellboard, depth, *you, Cow::Owned(snake_ids), instant_ref).1
+    paranoid_minimax(cellboard, depth, you, Cow::Owned(snake_ids), instant_ref).1
 }
 
 /// Given a cellboard, a depth and a SnakeId, this function will search for the best move
@@ -63,7 +63,7 @@ fn paranoid_minimax<
 >(
     game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     depth: i64,
-    you: SnakeId,
+    you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
 ) -> (f32, Move, i64) {
@@ -96,6 +96,7 @@ fn paranoid_minimax<
             let chunk = chunk.to_vec();
             let snake_ids_clone = snake_ids.to_vec();
             let start_clone = start.clone();
+            let you_clone = *you;
             tasks.push(std::thread::spawn(move || {
                 chunk
                     .into_iter()
@@ -103,7 +104,7 @@ fn paranoid_minimax<
                         let res = paranoid_minimax_single_threaded(
                             b,
                             depth - 1,
-                            you,
+                            you_clone,
                             Cow::Owned(snake_ids_clone.clone()),
                             start_clone.clone(),
                         );
@@ -123,24 +124,33 @@ fn paranoid_minimax<
     for (score, mv, depth) in recursive_scores.iter() {
         buckets[mv.as_index()].push((score, mv, depth));
     }
-    buckets
-        .iter()
-        .filter_map(|bucket| {
-            bucket
-                .iter()
-                .min_by(|(score, _, d), (other_score, _, other_d)| {
-                    score
-                        .partial_cmp(other_score)
-                        .unwrap_or(d.partial_cmp(other_d).unwrap_or(Ordering::Equal))
-                })
+    get_best_move_from_buckets(&buckets, depth)
+}
+
+fn get_recursive_scores<
+    T: CellNum + Send + 'static + Sync,
+    D: Dimensions + Send + Sync + Eq + 'static,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
+    simulations: impl Iterator<Item = (Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)>,
+    depth: i64,
+    you: &SnakeId,
+    snake_ids: Cow<Vec<SnakeId>>,
+    start: Arc<Instant>,
+) -> Vec<(f32, Move, i64)> {
+    simulations
+        .map(|(action, b)| {
+            let result = paranoid_minimax_single_threaded(
+                b,
+                depth - 1,
+                *you,
+                snake_ids.clone(),
+                start.clone(),
+            );
+            (result.0, action.own_move(), result.2)
         })
-        .max_by(|(score, _, d), (other_score, _, other_d)| {
-            score
-                .partial_cmp(other_score)
-                .unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
-        })
-        .map(|(&score, &mv, &d)| (score, mv, d))
-        .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
+        .collect()
 }
 
 pub fn paranoid_minimax_single_threaded<
@@ -170,22 +180,19 @@ pub fn paranoid_minimax_single_threaded<
         return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move, i64)> = simulations
-        .map(|(action, b)| {
-            let result = paranoid_minimax_single_threaded(
-                b,
-                depth - 1,
-                you,
-                snake_ids.clone(),
-                start.clone(),
-            );
-            (result.0, action.own_move(), result.2)
-        })
-        .collect();
+    let recursive_scores: Vec<(f32, Move, i64)> =
+        get_recursive_scores(simulations, depth, &you, snake_ids, start);
     let mut buckets = [vec![], vec![], vec![], vec![]];
     for (score, mv, d) in recursive_scores.iter() {
         buckets[mv.as_index()].push((score, mv, d));
     }
+    get_best_move_from_buckets(&buckets, depth)
+}
+
+fn get_best_move_from_buckets(
+    buckets: &[Vec<(&f32, &Move, &i64)>],
+    depth: i64,
+) -> (f32, Move, i64) {
     buckets
         .iter()
         .filter_map(|bucket| {
