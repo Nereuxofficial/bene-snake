@@ -38,7 +38,7 @@ pub fn calc_move<
     const MAX_SNAKES: usize,
 >(
     cellboard: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    depth: usize,
+    depth: i64,
     start: Instant,
 ) -> Move {
     let you = cellboard.you_id();
@@ -62,27 +62,27 @@ fn paranoid_minimax<
     const MAX_SNAKES: usize,
 >(
     game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    depth: usize,
+    depth: i64,
     you: SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
-) -> (f32, Move) {
+) -> (f32, Move, i64) {
     if is_won(game, &you) {
-        return (f32::INFINITY, Move::Down);
+        return (f32::INFINITY, Move::Down, depth);
     }
     if !game.is_alive(&you) {
-        return (f32::NEG_INFINITY, Move::Down);
+        return (f32::NEG_INFINITY, Move::Down, depth);
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
-        return (evaluate_board(game, &you, snake_ids), Move::Down);
+        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
     }
     #[cfg(not(feature = "bench"))]
     if start.elapsed() + DELAY > Duration::from_millis(500) {
-        return (evaluate_board(game, &you, snake_ids), Move::Down);
+        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move)> = {
+    let recursive_scores: Vec<(f32, Move, i64)> = {
         let simulation: Vec<(Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> =
             simulations.collect();
         let count = simulation.len();
@@ -100,19 +100,16 @@ fn paranoid_minimax<
                 chunk
                     .into_iter()
                     .map(|(action, b)| {
-                        (
-                            paranoid_minimax_single_threaded(
-                                b,
-                                depth - 1,
-                                you,
-                                Cow::Owned(snake_ids_clone.clone()),
-                                start_clone.clone(),
-                            )
-                            .0,
-                            action.own_move(),
-                        )
+                        let res = paranoid_minimax_single_threaded(
+                            b,
+                            depth - 1,
+                            you,
+                            Cow::Owned(snake_ids_clone.clone()),
+                            start_clone.clone(),
+                        );
+                        (res.0, action.own_move(), res.2)
                     })
-                    .collect::<Vec<(f32, Move)>>()
+                    .collect::<Vec<(f32, Move, i64)>>()
             }));
         }
         // Collect the results
@@ -123,21 +120,27 @@ fn paranoid_minimax<
     };
 
     let mut buckets = vec![vec![]; 4];
-    for (score, mv) in recursive_scores.iter() {
-        buckets[mv.as_index()].push((score, mv));
+    for (score, mv, depth) in recursive_scores.iter() {
+        buckets[mv.as_index()].push((score, mv, depth));
     }
     buckets
         .iter()
         .filter_map(|bucket| {
-            bucket.iter().min_by(|(score, _), (other_score, _)| {
-                score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
-            })
+            bucket
+                .iter()
+                .min_by(|(score, _, d), (other_score, _, other_d)| {
+                    score
+                        .partial_cmp(other_score)
+                        .unwrap_or(d.partial_cmp(other_d).unwrap_or(Ordering::Equal))
+                })
         })
-        .max_by(|(score, _), (other_score, _)| {
-            score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
+        .max_by(|(score, _, d), (other_score, _, other_d)| {
+            score
+                .partial_cmp(other_score)
+                .unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
         })
-        .map(|(&score, &mv)| (score, mv))
-        .unwrap_or((f32::NEG_INFINITY, Move::Down))
+        .map(|(&score, &mv, &d)| (score, mv, d))
+        .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
 }
 
 pub fn paranoid_minimax_single_threaded<
@@ -147,60 +150,61 @@ pub fn paranoid_minimax_single_threaded<
     const MAX_SNAKES: usize,
 >(
     game: CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    depth: usize,
+    depth: i64,
     you: SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
-) -> (f32, Move) {
+) -> (f32, Move, i64) {
     if is_won(game, &you) {
-        return (f32::INFINITY, Move::Down);
+        return (f32::INFINITY, Move::Down, depth);
     }
     if !game.is_alive(&you) {
-        return (f32::NEG_INFINITY, Move::Down);
+        return (f32::NEG_INFINITY, Move::Down, depth);
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
-        return (evaluate_board(game, &you, snake_ids), Move::Down);
+        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
     }
     #[cfg(not(feature = "bench"))]
     if start.elapsed() + DELAY > Duration::from_millis(500) {
-        return (evaluate_board(game, &you, snake_ids), Move::Down);
+        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move)> = simulations
+    let recursive_scores: Vec<(f32, Move, i64)> = simulations
         .map(|(action, b)| {
-            (
-                #[cfg(feature = "bench")]
-                paranoid_minimax_single_threaded(
-                    b,
-                    depth - 1,
-                    you,
-                    snake_ids.clone(),
-                    start.clone(),
-                )
-                .0,
-                #[cfg(not(feature = "bench"))]
-                paranoid_minimax_single_threaded(b, depth, you, snake_ids.clone(), start.clone()).0,
-                action.own_move(),
-            )
+            let result = paranoid_minimax_single_threaded(
+                b,
+                depth - 1,
+                you,
+                snake_ids.clone(),
+                start.clone(),
+            );
+            (result.0, action.own_move(), result.2)
         })
         .collect();
     let mut buckets = [vec![], vec![], vec![], vec![]];
-    for (score, mv) in recursive_scores.iter() {
-        buckets[mv.as_index()].push((score, mv));
+    for (score, mv, d) in recursive_scores.iter() {
+        buckets[mv.as_index()].push((score, mv, d));
     }
     buckets
         .iter()
         .filter_map(|bucket| {
-            bucket.iter().min_by(|(score, _), (other_score, _)| {
-                score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
-            })
+            bucket
+                .iter()
+                .min_by(|(score, _, d), (other_score, _, other_d)| {
+                    score
+                        .partial_cmp(other_score)
+                        .unwrap_or(d.partial_cmp(other_d).unwrap_or(Ordering::Equal))
+                })
         })
-        .max_by(|(score, _), (other_score, _)| {
-            score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
+        .max_by(|(score, _, d), (other_score, _, other_d)| {
+            score
+                .partial_cmp(other_score)
+                // Choose the move with the highest depth if the scores are equal
+                .unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
         })
-        .map(|(&score, &mv)| (score, mv))
-        .unwrap_or((f32::NEG_INFINITY, Move::Down))
+        .map(|(&score, &mv, &d)| (score, mv, d))
+        .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
 }
 
 // TODO: Cache the evaluate_board results more efficiently
