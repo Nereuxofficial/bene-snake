@@ -201,16 +201,14 @@ fn get_best_move_from_buckets(
                 .min_by(|(score, _, d), (other_score, _, other_d)| {
                     score
                         .partial_cmp(other_score)
-                        .unwrap_or(Ordering::Equal)
+                        .unwrap_or(d.partial_cmp(other_d).unwrap_or(Ordering::Equal))
                 })
         })
         .max_by(|(score, _, d), (other_score, _, other_d)| {
             score
                 .partial_cmp(other_score)
                 // Choose the move with the highest depth if the scores are equal
-                // TODO: Test once we can estimate elo
-                //.unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
-                .unwrap_or(Ordering::Equal)
+                .unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
         })
         .map(|(&score, &mv, &d)| (score, mv, d))
         .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
