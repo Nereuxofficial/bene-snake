@@ -199,9 +199,7 @@ fn get_best_move_from_buckets(
             bucket
                 .iter()
                 .min_by(|(score, _, d), (other_score, _, other_d)| {
-                    score
-                        .partial_cmp(other_score)
-                        .unwrap_or(d.partial_cmp(other_d).unwrap_or(Ordering::Equal))
+                    score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
                 })
         })
         .max_by(|(score, _, d), (other_score, _, other_d)| {
