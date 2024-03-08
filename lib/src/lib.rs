@@ -206,7 +206,7 @@ fn get_best_move_from_buckets(
             score
                 .partial_cmp(other_score)
                 // Choose the move with the highest depth if the scores are equal
-                .unwrap_or(other_d.partial_cmp(d).unwrap_or(Ordering::Equal))
+                .unwrap_or(Ordering::Equal)
         })
         .map(|(&score, &mv, &d)| (score, mv, d))
         .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
