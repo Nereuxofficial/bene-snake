@@ -4,7 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame};
 use battlesnake_game_types::wire_representation::Game;
-use lib::{calc_move, decode_state, GameStates};
+use lib::{calc_move, decode_state, GameStates, EVAL_CACHE};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -41,6 +41,7 @@ async fn end(State(game_states): State<GameStates>, body: String) -> Response {
     }
 
     game_states.lock().unwrap().remove(&game_state.game.id);
+    EVAL_CACHE.clear();
     Response::default()
 }
 
@@ -92,10 +93,9 @@ async fn main() -> color_eyre::Result<()> {
 mod tests {
     use super::*;
     use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
-    use battlesnake_game_types::types::{Action, SimulableGame, SnakeIDMap};
+    use battlesnake_game_types::types::{SimulableGame, SnakeIDMap};
     use lib::Simulator;
     use simd_json::prelude::ArrayTrait;
-    use std::sync::Arc;
 
     fn get_gamestate_with_id_map(id: &str, game: &Game) -> GameStates {
         let mut hm = HashMap::new();
