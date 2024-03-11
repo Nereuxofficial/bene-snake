@@ -1,5 +1,7 @@
 use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
-use battlesnake_game_types::types::{build_snake_id_map, SnakeIDMap, YouDeterminableGame};
+use battlesnake_game_types::types::{
+    build_snake_id_map, SimulableGame, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame,
+};
 use battlesnake_game_types::wire_representation::Game;
 use lib::{decode_state, evaluate_board};
 use std::borrow::Cow;
@@ -52,6 +54,24 @@ fn test_calc_move_depth_4() {
     let boards = test_boards();
     for board in boards.iter() {
         lib::calc_move(board.0, 4, Instant::now());
+    }
+}
+
+// Simulate a real game, where caching could be effective
+#[divan::bench]
+fn test_calc_moves_sequential_boards() {
+    let boards = test_boards();
+    for mut board in boards.iter().map(|x| x.0) {
+        for _ in 0..3 {
+            lib::calc_move(board, 3, Instant::now());
+
+            board = board
+                .clone()
+                .simulate(&lib::Simulator {}, board.get_snake_ids().to_vec())
+                .next()
+                .unwrap()
+                .1;
+        }
     }
 }
 

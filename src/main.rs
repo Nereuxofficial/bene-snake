@@ -4,11 +4,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame};
 use battlesnake_game_types::wire_representation::Game;
-use lib::{calc_move, decode_state, GameStates, EVAL_CACHE};
+#[cfg(feature = "caching")]
+use lib::EVAL_CACHE;
+use lib::{calc_move, decode_state, GameStates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tracing::info;
+// TODO: Implement MCTS
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -41,6 +44,7 @@ async fn end(State(game_states): State<GameStates>, body: String) -> Response {
     }
 
     game_states.lock().unwrap().remove(&game_state.game.id);
+    #[cfg(feature = "caching")]
     EVAL_CACHE.clear();
     Response::default()
 }

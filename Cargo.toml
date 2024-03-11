@@ -33,3 +33,6 @@ opt-level = 3
 debug = true
 panic = "abort"
 
+[features]
+bench = ["lib/bench"]
+caching = ["lib/caching"]

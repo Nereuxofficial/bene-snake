@@ -1,10 +1,10 @@
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
-use battlesnake_game_types::compact_representation::{CellIndex, CellNum};
+use battlesnake_game_types::compact_representation::CellNum;
 use battlesnake_game_types::types::{
     Action, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-    NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
-    SnakeIDGettableGame, SnakeIDMap, SnakeId, VictorDeterminableGame, YouDeterminableGame,
+    NeighborDeterminableGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeIDMap,
+    SnakeId, VictorDeterminableGame, YouDeterminableGame,
 };
 use battlesnake_game_types::wire_representation::Game;
 use std::borrow::Cow;
@@ -188,6 +188,8 @@ fn get_best_move_from_buckets(
         .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
 }
 
+/// Currently caching costs us more than it saves since the eval function is so fast
+#[cfg(feature = "caching")]
 pub static EVAL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11x11, f32>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
@@ -196,20 +198,21 @@ pub fn evaluate_board(
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
+    #[cfg(feature = "caching")]
     if let Some(cached) = EVAL_CACHE.get(&cellboard) {
-        *cached
-    } else {
-        let res = evaluate_for_player(cellboard, you)
-            - snake_ids
-                .clone()
-                .iter()
-                .filter(|&id| id != you)
-                .map(|id| evaluate_for_player(cellboard, id))
-                .sum::<f32>()
-                / 3.0;
-        EVAL_CACHE.insert(cellboard, res);
-        res
+        return *cached;
     }
+    let res = evaluate_for_player(cellboard, you)
+        - snake_ids
+            .clone()
+            .iter()
+            .filter(|&id| id != you)
+            .map(|id| evaluate_for_player(cellboard, id))
+            .sum::<f32>()
+            / 3.0;
+    #[cfg(feature = "caching")]
+    EVAL_CACHE.insert(cellboard, res);
+    res
 }
 
 fn evaluate_for_player(cellboard: CellBoard4Snakes11x11, you: &SnakeId) -> f32 {
