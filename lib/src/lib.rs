@@ -294,4 +294,13 @@ mod tests {
             .unwrap();
         println!("{:?}", max_move);
     }
+
+    #[test]
+    fn test_simulate_moves(){
+        let board = test_board();
+        println!("{}", board);
+        let simulations = board.simulate(&Simulator {}, board.get_snake_ids().to_vec());
+        let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
+        assert_eq!(6, simulation.len() );
+    }
 }
