@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::info;
+use tracing::info_span;
 
 pub const DELAY: Duration = Duration::from_millis(150);
 
@@ -25,9 +26,13 @@ pub fn decode_state(
 ) -> color_eyre::Result<CellBoard4Snakes11x11> {
     #[cfg(debug_assertions)]
     info!("JSON: {}", text);
-    let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
+    let game_states = game_states.lock().unwrap();
+    let decoded: Game = 
+        info_span!("decode_state", gamestates = game_states.keys().cloned().collect::<Vec<String>>().join(",")).in_scope(|| {
+        unsafe { 
+        simd_json::serde::from_str(&mut text) }})?;
     let cellboard = decoded
-        .as_cell_board(HashMap::get(&game_states.lock().unwrap(), &decoded.game.id).unwrap())
+        .as_cell_board(HashMap::get(&game_states, &decoded.game.id).unwrap())
         .unwrap();
     Ok(cellboard)
 }
@@ -54,10 +59,10 @@ fn paranoid_minimax(
     snake_ids: Cow<Vec<SnakeId>>,
     start: Arc<Instant>,
 ) -> (f32, Move, i64) {
-    if is_won(game, &you) {
+    if is_won(game, you) {
         return (f32::INFINITY, Move::Down, depth);
     }
-    if !game.is_alive(&you) {
+    if !game.is_alive(you) {
         return (f32::NEG_INFINITY, Move::Down, depth);
     }
     #[cfg(feature = "bench")]
@@ -66,7 +71,7 @@ fn paranoid_minimax(
     }
     #[cfg(not(feature = "bench"))]
     if start.elapsed() + DELAY > Duration::from_millis(500) {
-        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
+        return (evaluate_board(game, you, snake_ids), Move::Down, depth);
     }
     let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
     let recursive_scores: Vec<(f32, Move, i64)> = {

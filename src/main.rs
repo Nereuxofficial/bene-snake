@@ -1,3 +1,4 @@
+use tracing_tree::HierarchicalLayer;
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -10,7 +11,13 @@ use lib::{calc_move, decode_state, GameStates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
+use opentelemetry_otlp::WithExportConfig;
 use tracing::info;
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{Layer, Registry};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 // TODO: Implement MCTS
 
 #[global_allocator]
@@ -65,16 +72,72 @@ async fn start(State(game_states): State<GameStates>, body: String) -> Response 
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    tracing_subscriber::fmt::init();
     color_eyre::install()?;
     dotenvy::dotenv().ok();
     let _guard = sentry::init((
         std::env::var("SENTRY_DSN").unwrap(),
         sentry::ClientOptions {
             release: sentry::release_name!(),
+            traces_sample_rate: 0.0,
             ..Default::default()
         },
     ));
+    let logging: Box<dyn Layer<Registry> + Send + Sync> = if std::env::var("JSON_LOGS").is_ok() {
+        Box::new(tracing_subscriber::fmt::layer().json())
+    } else {
+        Box::new(tracing_subscriber::fmt::layer())
+    };
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+
+    let opentelemetry_layer = if let Ok(honeycomb_key) = std::env::var("HONEYCOMB_API_KEY") {
+        let mut map = HashMap::<String, String>::new();
+        map.insert("x-honeycomb-team".to_string(), honeycomb_key);
+        map.insert("x-honeycomb-dataset".to_string(), "web-axum".to_string());
+
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(
+                opentelemetry_otlp::new_exporter()
+                    .http()
+                    .with_endpoint("https://api.honeycomb.io/v1/traces")
+                    .with_timeout(Duration::from_secs(3))
+                    .with_headers(map),
+            )
+            .install_batch(opentelemetry::runtime::Tokio)?;
+
+        let opentelemetry_layer = OpenTelemetryLayer::new(tracer);
+
+        Some(opentelemetry_layer)
+    } else {
+        None
+    };
+
+    let heirarchical = if opentelemetry_layer.is_none() {
+        let heirarchical = HierarchicalLayer::default()
+            .with_writer(std::io::stdout)
+            .with_indent_lines(true)
+            .with_indent_amount(2)
+            .with_thread_names(true)
+            .with_thread_ids(true)
+            .with_verbose_exit(true)
+            .with_verbose_entry(true)
+            .with_targets(true);
+
+        Some(heirarchical)
+    } else {
+        None
+    };
+
+    Registry::default()
+        .with(logging)
+        .with(heirarchical)
+        .with(opentelemetry_layer)
+        .with(env_filter)
+        .with(sentry_tracing::layer())
+        .try_init()?;
+
+
+
     let gamestates: GameStates = GameStates::new(Mutex::new(HashMap::new()));
     info!("Hello Snakes!");
     let app = Router::new()
