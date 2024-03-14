@@ -1,0 +1,8 @@
+[package]
+name = "bs_nnue"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tch = { version = "0.15.0", features = ["download-libtorch"] }
+battlesnake-game-types = { git = "https://github.com/Nereuxofficial/battlesnake-game-types" }

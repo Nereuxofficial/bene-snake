@@ -1,4 +1,3 @@
-use tracing_tree::HierarchicalLayer;
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -8,21 +7,23 @@ use battlesnake_game_types::wire_representation::Game;
 #[cfg(feature = "caching")]
 use lib::EVAL_CACHE;
 use lib::{calc_move, decode_state, GameStates};
+use opentelemetry_otlp::WithExportConfig;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use opentelemetry_otlp::WithExportConfig;
-use tracing::info;
+use tracing::{info, instrument};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{Layer, Registry};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Registry;
+use tracing_tree::HierarchicalLayer;
 // TODO: Implement MCTS
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[instrument(skip(game_states))]
 async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
@@ -82,17 +83,13 @@ async fn main() -> color_eyre::Result<()> {
             ..Default::default()
         },
     ));
-    let logging: Box<dyn Layer<Registry> + Send + Sync> = if std::env::var("JSON_LOGS").is_ok() {
-        Box::new(tracing_subscriber::fmt::layer().json())
-    } else {
-        Box::new(tracing_subscriber::fmt::layer())
-    };
+
     let env_filter = tracing_subscriber::EnvFilter::from_default_env();
 
     let opentelemetry_layer = if let Ok(honeycomb_key) = std::env::var("HONEYCOMB_API_KEY") {
         let mut map = HashMap::<String, String>::new();
         map.insert("x-honeycomb-team".to_string(), honeycomb_key);
-        map.insert("x-honeycomb-dataset".to_string(), "web-axum".to_string());
+        map.insert("x-honeycomb-dataset".to_string(), "bene-snake".to_string());
 
         let tracer = opentelemetry_otlp::new_pipeline()
             .tracing()
@@ -129,14 +126,11 @@ async fn main() -> color_eyre::Result<()> {
     };
 
     Registry::default()
-        .with(logging)
         .with(heirarchical)
         .with(opentelemetry_layer)
         .with(env_filter)
         .with(sentry_tracing::layer())
         .try_init()?;
-
-
 
     let gamestates: GameStates = GameStates::new(Mutex::new(HashMap::new()));
     info!("Hello Snakes!");

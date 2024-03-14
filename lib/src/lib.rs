@@ -14,29 +14,26 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::info;
-use tracing::info_span;
+use tracing::{info_span, instrument};
 
 pub const DELAY: Duration = Duration::from_millis(150);
 
 pub type GameStates = Arc<Mutex<HashMap<String, SnakeIDMap>>>;
 
+#[instrument]
 pub fn decode_state(
     mut text: String,
     game_states: GameStates,
 ) -> color_eyre::Result<CellBoard4Snakes11x11> {
-    #[cfg(debug_assertions)]
-    info!("JSON: {}", text);
     let game_states = game_states.lock().unwrap();
-    let decoded: Game = 
-        info_span!("decode_state", gamestates = game_states.keys().cloned().collect::<Vec<String>>().join(",")).in_scope(|| {
-        unsafe { 
-        simd_json::serde::from_str(&mut text) }})?;
+    let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
     let cellboard = decoded
         .as_cell_board(HashMap::get(&game_states, &decoded.game.id).unwrap())
         .unwrap();
     Ok(cellboard)
 }
 
+#[instrument(skip(cellboard, start))]
 pub fn calc_move(cellboard: CellBoard4Snakes11x11, depth: i64, start: Instant) -> Move {
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
@@ -52,6 +49,7 @@ pub fn calc_move(cellboard: CellBoard4Snakes11x11, depth: i64, start: Instant) -
 /// We then simulate the next opponent moves and pick the least favorable outcome for us.
 /// Repeat until there are no more opponents left on the current board.
 /// In Paranoid Minimax, we want to maximize our own score and minimize the score of our opponents.
+#[instrument(skip_all, ret)]
 fn paranoid_minimax(
     game: CellBoard4Snakes11x11,
     depth: i64,
@@ -83,31 +81,40 @@ fn paranoid_minimax(
         let mut tasks = Vec::with_capacity(threads);
         // Distribute the work across the threads
         // Split simulations into threads chunks
-        for chunk in simulation.chunks(max(count / threads, 1)) {
-            let chunk = chunk.to_vec();
-            let snake_ids_clone = snake_ids.to_vec();
-            let start_clone = start.clone();
-            let you_clone = *you;
-            tasks.push(std::thread::spawn(move || {
-                chunk
-                    .into_iter()
-                    .map(|(action, b)| {
-                        let res = paranoid_minimax_single_threaded(
-                            b,
-                            depth - 1,
-                            you_clone,
-                            Cow::Owned(snake_ids_clone.clone()),
-                            start_clone.clone(),
-                        );
-                        (res.0, action.own_move(), res.2)
-                    })
-                    .collect::<Vec<(f32, Move, i64)>>()
-            }));
-        }
-        // Collect the results
-        for task in tasks {
-            scores.append(&mut task.join().unwrap());
-        }
+        let chunk_size = max(count / threads, 1);
+        info_span!(
+            "Distributing work across threads",
+            count = count,
+            threads = threads,
+            chunk_size = chunk_size
+        )
+        .in_scope(|| {
+            for chunk in simulation.chunks(chunk_size) {
+                let chunk = chunk.to_vec();
+                let snake_ids_clone = snake_ids.to_vec();
+                let start_clone = start.clone();
+                let you_clone = *you;
+                tasks.push(std::thread::spawn(move || {
+                    chunk
+                        .into_iter()
+                        .map(|(action, b)| {
+                            let res = paranoid_minimax_single_threaded(
+                                b,
+                                depth - 1,
+                                you_clone,
+                                Cow::Owned(snake_ids_clone.clone()),
+                                start_clone.clone(),
+                            );
+                            (res.0, action.own_move(), res.2)
+                        })
+                        .collect::<Vec<(f32, Move, i64)>>()
+                }));
+            }
+            // Collect the results
+            for task in tasks {
+                scores.append(&mut task.join().unwrap());
+            }
+        });
         scores
     };
 
@@ -115,9 +122,9 @@ fn paranoid_minimax(
     for (score, mv, depth) in recursive_scores.iter() {
         buckets[mv.as_index()].push((score, mv, depth));
     }
-    get_best_move_from_buckets(&buckets, depth)
+    info_span!("Finding best move from buckets")
+        .in_scope(|| get_best_move_from_buckets(&buckets, depth))
 }
-
 fn get_recursive_scores(
     simulations: impl Iterator<Item = (Action<4>, CellBoard4Snakes11x11)>,
     depth: i64,
@@ -301,11 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn test_simulate_moves(){
+    fn test_simulate_moves() {
         let board = test_board();
         println!("{}", board);
         let simulations = board.simulate(&Simulator {}, board.get_snake_ids().to_vec());
         let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
-        assert_eq!(6, simulation.len() );
+        assert_eq!(6, simulation.len());
     }
 }
