@@ -76,8 +76,7 @@ fn paranoid_minimax(
         let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
         let count = simulation.len();
         let mut scores = Vec::with_capacity(count);
-        // TODO: rayon is a bit overkill for getting the number of threads, replace it with something else
-        let threads = rayon::current_num_threads();
+        let threads = std::thread::available_parallelism().unwrap().get();
         let mut tasks = Vec::with_capacity(threads);
         // Distribute the work across the threads
         // Split simulations into threads chunks
@@ -317,7 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn test_eval() {
+    fn test_available_threads(){
+        // sorry this test is pretty manual :c
+        let threads = std::thread::available_parallelism().unwrap().get();
+        println!("Threads: {}", threads);
+    }
+
+    #[test]
+    fn test_eval(){
         // TODO
     }
 }
