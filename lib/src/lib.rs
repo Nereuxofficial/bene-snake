@@ -315,4 +315,9 @@ mod tests {
         let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
         assert_eq!(6, simulation.len());
     }
+
+    #[test]
+    fn test_eval() {
+        // TODO
+    }
 }
