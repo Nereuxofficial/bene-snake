@@ -316,14 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn test_available_threads(){
+    fn test_available_threads() {
         // sorry this test is pretty manual :c
         let threads = std::thread::available_parallelism().unwrap().get();
         println!("Threads: {}", threads);
     }
 
     #[test]
-    fn test_eval(){
+    fn test_eval() {
         // TODO
     }
 }
