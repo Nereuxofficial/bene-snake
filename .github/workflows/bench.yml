@@ -37,4 +37,4 @@ jobs:
         run: cd lib && cargo bench --features bench
 
       - name: Run cargo bench with Caching
-        run: cd lib && cargo bench --features "bench, cache"
+        run: cd lib && cargo bench --features "bench, caching"
