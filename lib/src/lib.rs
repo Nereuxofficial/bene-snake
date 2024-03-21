@@ -1,3 +1,5 @@
+mod minimax_new;
+
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
 use battlesnake_game_types::compact_representation::CellNum;
@@ -253,8 +255,10 @@ pub fn is_won<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAK
 mod tests {
     use super::*;
     use crate::decode_state;
-    use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
-    use battlesnake_game_types::types::build_snake_id_map;
+    use battlesnake_game_types::compact_representation::{
+        CellIndex, StandardCellBoard4Snakes11x11,
+    };
+    use battlesnake_game_types::types::{build_snake_id_map, ReasonableMovesGame};
     use battlesnake_game_types::wire_representation::Game;
     use simd_json::prelude::ArrayTrait;
     use std::cmp::Ordering;
@@ -325,5 +329,23 @@ mod tests {
     #[test]
     fn test_eval() {
         // TODO
+    }
+
+    #[test]
+    fn test_possible_moves() {
+        let board = test_board();
+        let head = board.get_head_as_native_position(board.you_id());
+        let moves: Vec<Move> = board.possible_moves(&head).map(|(m, i)| m).collect();
+        let reasonable_moves = board
+            .reasonable_moves_for_each_snake()
+            .filter_map(|(id, moves)| {
+                if id == *board.you_id() {
+                    Some(moves)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(moves, *reasonable_moves.first().unwrap());
     }
 }

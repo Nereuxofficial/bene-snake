@@ -1,4 +1,4 @@
-workspace = { members = [ "bs_nnue","lib"] }
+workspace = { members = ["bs_nnue", "lib"] }
 [package]
 name = "bene-snake"
 version = "0.1.1"
@@ -16,7 +16,7 @@ dotenvy = "0.15.7"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7.4", features = ["macros"] }
 battlesnake-game-types = { git = "https://github.com/Nereuxofficial/battlesnake-game-types" }
-serde = "1.0.196"
+serde = "1.0.197"
 simd-json = "0.13.8"
 serde_json = "1.0.114"
 sentry = "0.32.2"
