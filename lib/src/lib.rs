@@ -85,8 +85,7 @@ fn paranoid_minimax(
     for (score, mv, depth) in recursive_scores {
         buckets[mv.as_index()].push((score, mv, depth));
     }
-    info_span!("Finding best move from buckets")
-        .in_scope(|| get_best_move_from_buckets(buckets.as_slice(), depth))
+    get_best_move_from_buckets(buckets.as_slice(), depth)
 }
 
 fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> (f32, Move, i64) {
