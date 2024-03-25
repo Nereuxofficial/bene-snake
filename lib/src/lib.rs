@@ -89,20 +89,6 @@ fn paranoid_minimax(
     info_span!("Finding best move from buckets")
         .in_scope(|| get_best_move_from_buckets(buckets.as_slice(), depth))
 }
-fn get_recursive_scores(
-    simulations: impl Iterator<Item = (Action<4>, CellBoard4Snakes11x11)>,
-    depth: i64,
-    you: &SnakeId,
-    snake_ids: Cow<Vec<SnakeId>>,
-    start: Arc<Instant>,
-) -> Vec<(f32, Move, i64)> {
-    simulations
-        .map(|(action, b)| {
-            let result = paranoid_minimax(b, depth - 1, you, snake_ids.clone(), start.clone());
-            (result.0, action.own_move(), result.2)
-        })
-        .collect()
-}
 
 fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> (f32, Move, i64) {
     buckets
