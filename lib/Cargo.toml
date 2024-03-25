@@ -25,6 +25,7 @@ once_cell = "1.19.0"
 dashmap = "5.5.3"
 ahash = { version = "0.8.10" }
 minimax = "0.5.3"
+rayon = "1.10.0"
 
 # Performance
 [profile.release]

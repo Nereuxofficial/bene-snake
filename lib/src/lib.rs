@@ -1,5 +1,3 @@
-mod minimax_new;
-
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
 use battlesnake_game_types::compact_representation::CellNum;
@@ -9,8 +7,9 @@ use battlesnake_game_types::types::{
     SnakeId, VictorDeterminableGame, YouDeterminableGame,
 };
 use battlesnake_game_types::wire_representation::Game;
+use rayon::prelude::*;
 use std::borrow::Cow;
-use std::cmp::{max, Ordering};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -73,58 +72,22 @@ fn paranoid_minimax(
     if start.elapsed() + DELAY > Duration::from_millis(500) {
         return (evaluate_board(game, you, snake_ids), Move::Down, depth);
     }
-    let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move, i64)> = {
-        let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
-        let count = simulation.len();
-        let mut scores = Vec::with_capacity(count);
-        let threads = std::thread::available_parallelism().unwrap().get();
-        let mut tasks = Vec::with_capacity(threads);
-        // Distribute the work across the threads
-        // Split simulations into threads chunks
-        let chunk_size = max(count / threads, 1);
-        info_span!(
-            "Distributing work across threads",
-            count = count,
-            threads = threads,
-            chunk_size = chunk_size
-        )
-        .in_scope(|| {
-            for chunk in simulation.chunks(chunk_size) {
-                let chunk = chunk.to_vec();
-                let snake_ids_clone = snake_ids.to_vec();
-                let start_clone = start.clone();
-                let you_clone = *you;
-                tasks.push(std::thread::spawn(move || {
-                    chunk
-                        .into_iter()
-                        .map(|(action, b)| {
-                            let res = paranoid_minimax_single_threaded(
-                                b,
-                                depth - 1,
-                                you_clone,
-                                Cow::Owned(snake_ids_clone.clone()),
-                                start_clone.clone(),
-                            );
-                            (res.0, action.own_move(), res.2)
-                        })
-                        .collect::<Vec<(f32, Move, i64)>>()
-                }));
-            }
-            // Collect the results
-            for task in tasks {
-                scores.append(&mut task.join().unwrap());
-            }
-        });
-        scores
-    };
-
+    let simulations: Vec<(Action<4>, CellBoard4Snakes11x11)> = game
+        .simulate(&Simulator {}, game.get_snake_ids().to_vec())
+        .collect();
+    let recursive_scores: Vec<(f32, Move, i64)> = simulations
+        .par_iter()
+        .map(|(action, b)| {
+            let res = paranoid_minimax(*b, depth - 1, you, snake_ids.clone(), start.clone());
+            (res.0, action.own_move(), res.2)
+        })
+        .collect();
     let mut buckets = vec![vec![]; 4];
-    for (score, mv, depth) in recursive_scores.iter() {
+    for (score, mv, depth) in recursive_scores {
         buckets[mv.as_index()].push((score, mv, depth));
     }
     info_span!("Finding best move from buckets")
-        .in_scope(|| get_best_move_from_buckets(&buckets, depth))
+        .in_scope(|| get_best_move_from_buckets(buckets.as_slice(), depth))
 }
 fn get_recursive_scores(
     simulations: impl Iterator<Item = (Action<4>, CellBoard4Snakes11x11)>,
@@ -135,53 +98,13 @@ fn get_recursive_scores(
 ) -> Vec<(f32, Move, i64)> {
     simulations
         .map(|(action, b)| {
-            let result = paranoid_minimax_single_threaded(
-                b,
-                depth - 1,
-                *you,
-                snake_ids.clone(),
-                start.clone(),
-            );
+            let result = paranoid_minimax(b, depth - 1, you, snake_ids.clone(), start.clone());
             (result.0, action.own_move(), result.2)
         })
         .collect()
 }
 
-pub fn paranoid_minimax_single_threaded(
-    game: CellBoard4Snakes11x11,
-    depth: i64,
-    you: SnakeId,
-    snake_ids: Cow<Vec<SnakeId>>,
-    start: Arc<Instant>,
-) -> (f32, Move, i64) {
-    if is_won(game, &you) {
-        return (f32::INFINITY, Move::Down, depth);
-    }
-    if !game.is_alive(&you) {
-        return (f32::NEG_INFINITY, Move::Down, depth);
-    }
-    #[cfg(feature = "bench")]
-    if depth == 0 {
-        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
-    }
-    #[cfg(not(feature = "bench"))]
-    if start.elapsed() + DELAY > Duration::from_millis(500) {
-        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
-    }
-    let simulations = game.simulate(&Simulator {}, game.get_snake_ids().to_vec());
-    let recursive_scores: Vec<(f32, Move, i64)> =
-        get_recursive_scores(simulations, depth, &you, snake_ids, start);
-    let mut buckets = [vec![], vec![], vec![], vec![]];
-    for (score, mv, d) in recursive_scores.iter() {
-        buckets[mv.as_index()].push((score, mv, d));
-    }
-    get_best_move_from_buckets(&buckets, depth)
-}
-
-fn get_best_move_from_buckets(
-    buckets: &[Vec<(&f32, &Move, &i64)>],
-    depth: i64,
-) -> (f32, Move, i64) {
+fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> (f32, Move, i64) {
     buckets
         .iter()
         .filter_map(|bucket| {
@@ -197,11 +120,11 @@ fn get_best_move_from_buckets(
                 // Choose the move with the highest depth if the scores are equal
                 .unwrap_or(Ordering::Equal)
         })
-        .map(|(&score, &mv, &d)| (score, mv, d))
+        .map(|(score, mv, d)| (*score, *mv, *d))
         .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
 }
 
-/// Currently caching costs us more than it saves since the eval function is so fast
+/// Currently &caching costs us more than it saves since the eval function is so fast
 #[cfg(feature = "caching")]
 pub static EVAL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11x11, f32>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
