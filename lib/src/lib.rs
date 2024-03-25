@@ -94,13 +94,11 @@ fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> 
     buckets
         .iter()
         .filter_map(|bucket| {
-            bucket
-                .iter()
-                .min_by(|(score, _, d), (other_score, _, other_d)| {
-                    score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
-                })
+            bucket.iter().min_by(|(score, _, _), (other_score, _, _)| {
+                score.partial_cmp(other_score).unwrap_or(Ordering::Equal)
+            })
         })
-        .max_by(|(score, _, d), (other_score, _, other_d)| {
+        .max_by(|(score, _, _), (other_score, _, _)| {
             score
                 .partial_cmp(other_score)
                 // Choose the move with the highest depth if the scores are equal
