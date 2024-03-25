@@ -50,7 +50,6 @@ pub fn calc_move(cellboard: CellBoard4Snakes11x11, depth: i64, start: Instant) -
 /// We then simulate the next opponent moves and pick the least favorable outcome for us.
 /// Repeat until there are no more opponents left on the current board.
 /// In Paranoid Minimax, we want to maximize our own score and minimize the score of our opponents.
-#[instrument(skip_all, ret)]
 fn paranoid_minimax(
     game: CellBoard4Snakes11x11,
     depth: i64,
