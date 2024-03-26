@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::info;
-use tracing::{info_span, instrument};
+use tracing::instrument;
 
 pub const DELAY: Duration = Duration::from_millis(150);
 

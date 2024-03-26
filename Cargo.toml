@@ -23,8 +23,14 @@ sentry = "0.32.2"
 divan = "0.1.14"
 # Faster allocator
 mimalloc = { version = "0.1", default-features = false }
-opentelemetry = { version = "0.18.0", features = ["rt-tokio"], default-features = false }
-opentelemetry-otlp = { version = "0.11.0", features = ["http-proto", "reqwest-rustls", "reqwest-client"], default-features = false }
+opentelemetry = { version = "0.18.0", features = [
+    "rt-tokio",
+], default-features = false }
+opentelemetry-otlp = { version = "0.11.0", features = [
+    "http-proto",
+    "reqwest-rustls",
+    "reqwest-client",
+], default-features = false }
 tracing-opentelemetry = "0.18.0"
 tracing-tree = "0.3.0"
 sentry-tracing = "0.32.2"
