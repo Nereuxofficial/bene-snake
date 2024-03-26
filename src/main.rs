@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use tracing::{info, instrument};
+use tracing::{info, info_span, instrument};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -34,13 +34,15 @@ async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<V
 }
 
 async fn info() -> Json<Value> {
-    Json(json!({
-        "apiversion": "1",
-        "author": "Nereuxofficial",
-        "color": "#FF5E5B",
-        "head": "mlh-gene",
-        "tail": "mlh-gene",
-    }))
+    info_span!("Got info request").in_scope(|| {
+        Json(json!({
+            "apiversion": "1",
+            "author": "Nereuxofficial",
+            "color": "#FF5E5B",
+            "head": "mlh-gene",
+            "tail": "mlh-gene",
+        }))
+    })
 }
 
 async fn end(State(game_states): State<GameStates>, body: String) -> Response {
