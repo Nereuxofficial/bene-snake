@@ -1,4 +1,5 @@
 use serde_json::Value;
+use tracing::debug;
 
 #[derive(Debug, serde::Deserialize)]
 struct EnginePosition {
@@ -53,6 +54,7 @@ async fn request_game_frame(
         .send()
         .await?;
     let response_text = response.text().await?;
+    debug!("Response: {:?}", response_text);
     let response_json: EngineResponse = serde_json::from_str(&response_text).unwrap();
     Ok(response_json)
 }

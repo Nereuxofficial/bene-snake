@@ -127,7 +127,7 @@ pub fn evaluate_board(
             .filter(|&id| id != you)
             .map(|id| evaluate_for_player(cellboard, id))
             .sum::<f32>()
-            / 3.0;
+            / snake_ids.len() as f32;
     #[cfg(feature = "caching")]
     EVAL_CACHE.insert(cellboard, res);
     res
@@ -135,7 +135,7 @@ pub fn evaluate_board(
 
 fn evaluate_for_player(cellboard: CellBoard4Snakes11x11, you: &SnakeId) -> f32 {
     cellboard.get_health(you) as f32 / 10.0
-        + cellboard.get_length(you) as f32
+        + cellboard.get_length(you) as f32 * 5.0
         + cellboard
             .possible_moves(&cellboard.get_head_as_native_position(you))
             .count()
