@@ -28,7 +28,7 @@ async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<V
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
     let cellboard = decode_state(body, game_states).unwrap();
-    let chosen_move = calc_move(cellboard, 10, start).to_string();
+    let chosen_move = calc_move(cellboard, 50, start).to_string();
     info!("Calculation took: {:?}", start.elapsed());
     Json(json!({"move": chosen_move}))
 }

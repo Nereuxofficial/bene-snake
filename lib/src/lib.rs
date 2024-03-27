@@ -65,10 +65,10 @@ fn paranoid_minimax(
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
-        return (evaluate_board(game, &you, snake_ids), Move::Down, depth);
+        return (evaluate_board(game, you, snake_ids), Move::Down, depth);
     }
     #[cfg(not(feature = "bench"))]
-    if start.elapsed() + DELAY > Duration::from_millis(500) {
+    if start.elapsed() + DELAY > Duration::from_millis(500) || depth == 0 {
         return (evaluate_board(game, you, snake_ids), Move::Down, depth);
     }
     let simulations: Vec<(Action<4>, CellBoard4Snakes11x11)> = game
@@ -103,7 +103,7 @@ fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> 
                 .unwrap_or(Ordering::Equal)
         })
         .map(|(score, mv, d)| (*score, *mv, *d))
-        .unwrap_or((f32::NEG_INFINITY, Move::Down, depth))
+        .unwrap()
 }
 
 /// Currently &caching costs us more than it saves since the eval function is so fast
@@ -160,9 +160,7 @@ pub fn is_won<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAK
 mod tests {
     use super::*;
     use crate::decode_state;
-    use battlesnake_game_types::compact_representation::{
-        CellIndex, StandardCellBoard4Snakes11x11,
-    };
+    use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
     use battlesnake_game_types::types::{build_snake_id_map, ReasonableMovesGame};
     use battlesnake_game_types::wire_representation::Game;
     use simd_json::prelude::ArrayTrait;
@@ -252,5 +250,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_ne!(moves, *reasonable_moves.first().unwrap());
+    }
+
+    #[test]
+    fn does_not_do_dumb_move() {
+        let board_string = r##"{"game":{"id":"038fb980-3e76-4c06-b60e-07251422175f","ruleset":{"name":"standard","version":"?","settings":{"foodSpawnChance":15,"minimumFood":1,"hazardDamagePerTurn":0}},"map":"standard","timeout":500,"source":"custom"},"turn":255,"board":{"width":11,"height":11,"food":[{"x":4,"y":0},{"x":3,"y":4}],"hazards":[],"snakes":[{"id":"gs_Cx6Rxgx8qbKCdKHvK4bwWTfS","name":"Kakemonsteret-v2","health":91,"body":[{"x":10,"y":9},{"x":10,"y":10},{"x":9,"y":10},{"x":9,"y":9},{"x":9,"y":8},{"x":8,"y":8},{"x":8,"y":7},{"x":8,"y":6},{"x":8,"y":5},{"x":7,"y":5},{"x":7,"y":6},{"x":6,"y":6},{"x":6,"y":5},{"x":5,"y":5},{"x":5,"y":4},{"x":4,"y":4},{"x":4,"y":5},{"x":4,"y":6},{"x":4,"y":7}],"latency":48,"head":{"x":10,"y":9},"length":19,"shout":"","squad":"","customizations":{"color":"#9400d3","head":"default","tail":"default"}},{"id":"gs_dQ9PSkYTCfKffD9WyJ39QB66","name":"bene-snake","health":100,"body":[{"x":3,"y":6},{"x":2,"y":6},{"x":2,"y":5},{"x":1,"y":5},{"x":1,"y":4},{"x":2,"y":4},{"x":2,"y":3},{"x":2,"y":2},{"x":2,"y":2}],"latency":470,"head":{"x":3,"y":6},"length":9,"shout":"","squad":"","customizations":{"color":"#ff5e5b","head":"mlh-gene","tail":"mlh-gene"}},{"id":"gs_Gv9SPCBHmJ8bWvp6D9wJj3fc","name":"Geriatric Jagwire","health":76,"body":[{"x":5,"y":2},{"x":4,"y":2},{"x":4,"y":1},{"x":3,"y":1},{"x":3,"y":2},{"x":3,"y":3},{"x":4,"y":3},{"x":5,"y":3},{"x":6,"y":3},{"x":6,"y":4},{"x":7,"y":4},{"x":7,"y":3},{"x":8,"y":3}],"latency":24,"head":{"x":5,"y":2},"length":13,"shout":"","squad":"","customizations":{"color":"#ffe58f","head":"glasses","tail":"freckled"}}]},"you":{"id":"gs_dQ9PSkYTCfKffD9WyJ39QB66","name":"bene-snake","health":100,"body":[{"x":3,"y":6},{"x":2,"y":6},{"x":2,"y":5},{"x":1,"y":5},{"x":1,"y":4},{"x":2,"y":4},{"x":2,"y":3},{"x":2,"y":2},{"x":2,"y":2}],"latency":470,"head":{"x":3,"y":6},"length":9,"shout":"","squad":"","customizations":{"color":"#ff5e5b","head":"mlh-gene","tail":"mlh-gene"}}}"##;
+        let board = serde_json::from_str::<Game>(board_string).unwrap();
+        let cb = board.as_cell_board(&build_snake_id_map(&board)).unwrap();
+        let r#move = calc_move(cb, 3, Instant::now());
+        assert_ne!(r#move, Move::Down);
     }
 }
