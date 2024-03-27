@@ -39,8 +39,7 @@ jobs:
         run: cargo check --all-targets
 
       - name: Run cargo test
-        if: ${{ runner.os == 'Linux' }}
-        run: cargo test -- --test-threads=1
+        run: cargo test --features bench -- --test-threads=1
       - name: Run cargo doc
         if: ${{ runner.os == 'Linux' }}
         run: cargo doc --no-deps --document-private-items --all-features

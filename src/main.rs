@@ -48,9 +48,13 @@ async fn info() -> Json<Value> {
 async fn end(State(game_states): State<GameStates>, body: String) -> Response {
     let game_state: Game = serde_json::from_str(&body).unwrap();
     if game_state.you_are_winner() {
-        info!("We won the game");
+        info_span!("We won the game").in_scope(|| {
+            info!("We won the game");
+        });
     } else {
-        info!("We lost the game");
+        info_span!("We lost the game").in_scope(|| {
+            info!("We lost the game");
+        });
     }
 
     game_states.lock().unwrap().remove(&game_state.game.id);
