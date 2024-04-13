@@ -122,7 +122,6 @@ pub fn evaluate_board(
     }
     let res = evaluate_for_player(cellboard, you)
         - snake_ids
-            .clone()
             .iter()
             .filter(|&id| id != you)
             .map(|id| evaluate_for_player(cellboard, id))
