@@ -9,12 +9,12 @@ use battlesnake_game_types::types::{
     build_snake_id_map, SimulableGame, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame,
 };
 use battlesnake_game_types::wire_representation::Game;
+use divan::AllocProfiler;
 use lib::{decode_state, evaluate_board};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use divan::AllocProfiler;
 
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();
@@ -75,12 +75,14 @@ fn test_calc_moves_sequential_boards() {
         for _ in 0..3 {
             divan::black_box(lib::calc_move(board, 3, Instant::now()));
 
-            board = divan::black_box(board
-                .clone()
-                .simulate(&lib::Simulator {}, board.get_snake_ids().to_vec())
-                .next()
-                .unwrap()
-                .1);
+            board = divan::black_box(
+                board
+                    .clone()
+                    .simulate(&lib::Simulator {}, board.get_snake_ids().to_vec())
+                    .next()
+                    .unwrap()
+                    .1,
+            );
         }
     }
 }
