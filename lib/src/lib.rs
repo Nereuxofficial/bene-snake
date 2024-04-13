@@ -38,7 +38,7 @@ pub fn decode_state(
 pub fn calc_move(cellboard: CellBoard4Snakes11x11, depth: i64, start: Instant) -> Move {
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
-    let instant_ref = Arc::new(start);
+    let instant_ref = &start;
     paranoid_minimax(cellboard, depth, you, Cow::Owned(snake_ids), instant_ref).1
 }
 
@@ -55,7 +55,7 @@ fn paranoid_minimax(
     depth: i64,
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
-    start: Arc<Instant>,
+    start: &Instant,
 ) -> (f32, Move, i64) {
     if is_won(game, you) {
         return (f32::INFINITY, Move::Down, depth);
@@ -77,7 +77,7 @@ fn paranoid_minimax(
     let recursive_scores: Vec<(f32, Move, i64)> = simulations
         .par_iter()
         .map(|(action, b)| {
-            let res = paranoid_minimax(*b, depth - 1, you, snake_ids.clone(), start.clone());
+            let res = paranoid_minimax(*b, depth - 1, you, snake_ids.clone(), start);
             (res.0, action.own_move(), res.2)
         })
         .collect();
