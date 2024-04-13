@@ -1,3 +1,9 @@
+//! This is the benchmarking setup for bene-snake. It is used to measure the performance of the
+//! move generation and evaluation functions.
+//! It is important to note that you have to use the --feature bench.
+//! The following metrics are important for benchmarking:
+//! - Latency: The time it takes to generate a move
+//! - Allocations: The allocations done by a move generation
 use battlesnake_game_types::compact_representation::StandardCellBoard4Snakes11x11;
 use battlesnake_game_types::types::{
     build_snake_id_map, SimulableGame, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame,
@@ -8,6 +14,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use divan::AllocProfiler;
+
+#[global_allocator]
+static ALLOC: AllocProfiler = AllocProfiler::system();
 
 fn gen_test_board(string: &mut str) -> (StandardCellBoard4Snakes11x11, SnakeIDMap) {
     let mut string_clone = string.to_string();
@@ -45,7 +55,7 @@ fn main() {
 fn test_calc_move_depth_3() {
     let boards = test_boards();
     for board in boards.iter() {
-        lib::calc_move(board.0, 3, Instant::now());
+        divan::black_box(lib::calc_move(board.0, 3, Instant::now()));
     }
 }
 
@@ -53,7 +63,7 @@ fn test_calc_move_depth_3() {
 fn test_calc_move_depth_4() {
     let boards = test_boards();
     for board in boards.iter() {
-        lib::calc_move(board.0, 4, Instant::now());
+        divan::black_box(lib::calc_move(board.0, 4, Instant::now()));
     }
 }
 
@@ -63,14 +73,14 @@ fn test_calc_moves_sequential_boards() {
     let boards = test_boards();
     for mut board in boards.iter().map(|x| x.0) {
         for _ in 0..3 {
-            lib::calc_move(board, 3, Instant::now());
+            divan::black_box(lib::calc_move(board, 3, Instant::now()));
 
-            board = board
+            board = divan::black_box(board
                 .clone()
                 .simulate(&lib::Simulator {}, board.get_snake_ids().to_vec())
                 .next()
                 .unwrap()
-                .1;
+                .1);
         }
     }
 }
@@ -79,11 +89,11 @@ fn test_calc_moves_sequential_boards() {
 fn bench_eval() {
     let boards = test_boards();
     for board in boards.iter() {
-        evaluate_board(
+        divan::black_box(evaluate_board(
             board.0,
             board.0.you_id(),
             Cow::Owned(board.1.values().copied().collect()),
-        );
+        ));
     }
 }
 
