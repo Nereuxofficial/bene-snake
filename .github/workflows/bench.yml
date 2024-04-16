@@ -3,22 +3,21 @@ name: Bench
 on:
   merge_group:
   push:
-    branches: [ main, dev ]
+    branches: [main, dev]
   pull_request:
-    branches: [ main, dev ]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  bench:
     strategy:
       matrix:
-        os: [ ubuntu-latest ]
-        toolchain: [ stable, nightly ]
+        os: [ubuntu-latest]
+        toolchain: [stable, nightly]
     runs-on: ${{ matrix.os }}
     steps:
-
       - name: Checkout
         uses: actions/checkout@v2
 

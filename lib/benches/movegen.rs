@@ -105,5 +105,4 @@ async fn bench_with_tokio() {
     bench_eval();
     test_calc_moves_sequential_boards();
     test_calc_move_depth_3();
-    test_calc_move_depth_4();
 }

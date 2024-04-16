@@ -35,15 +35,6 @@ tracing-opentelemetry = "0.18.0"
 tracing-tree = "0.3.0"
 sentry-tracing = "0.32.2"
 
-
-# Performance
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
-debug = true
-panic = "abort"
-
 [features]
 bench = ["lib/bench"]
 caching = ["lib/caching"]

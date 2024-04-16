@@ -27,13 +27,6 @@ ahash = { version = "0.8.10" }
 minimax = "0.5.3"
 rayon = "1.10.0"
 
-# Performance
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
-debug = true
-panic = "abort"
 
 [features]
 bench = []
