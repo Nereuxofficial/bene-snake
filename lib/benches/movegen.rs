@@ -67,7 +67,7 @@ fn test_calc_moves_sequential_boards() {
 
             board = board
                 .clone()
-                .simulate(&lib::Simulator {}, board.get_snake_ids().to_vec())
+                .simulate(&lib::Simulator {}, &board.get_snake_ids())
                 .next()
                 .unwrap()
                 .1;
@@ -80,7 +80,7 @@ fn bench_eval() {
     let boards = test_boards();
     for board in boards.iter() {
         evaluate_board(
-            board.0,
+            &board.0,
             board.0.you_id(),
             Cow::Owned(board.1.values().copied().collect()),
         );

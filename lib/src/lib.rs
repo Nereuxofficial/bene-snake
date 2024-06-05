@@ -1,3 +1,7 @@
+#![feature(portable_simd)]
+
+mod tree;
+
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
 use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBoard4Snakes11x11};
 use battlesnake_game_types::compact_representation::CellNum;
@@ -69,10 +73,10 @@ fn paranoid_minimax(
     }
     #[cfg(not(feature = "bench"))]
     if start.elapsed() + DELAY > Duration::from_millis(500) || depth == 0 {
-        return (evaluate_board(game, you, snake_ids), Move::Down, depth);
+        return (evaluate_board(&game, you, snake_ids), Move::Down, depth);
     }
     let simulations: Vec<(Action<4>, CellBoard4Snakes11x11)> = game
-        .simulate(&Simulator {}, game.get_snake_ids().to_vec())
+        .simulate(&Simulator {}, &game.get_snake_ids())
         .collect();
     let recursive_scores: Vec<(f32, Move, i64)> = simulations
         .par_iter()
@@ -112,7 +116,7 @@ pub static EVAL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
 pub fn evaluate_board(
-    cellboard: CellBoard4Snakes11x11,
+    cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
 ) -> f32 {
@@ -133,7 +137,7 @@ pub fn evaluate_board(
     res
 }
 
-fn evaluate_for_player(cellboard: CellBoard4Snakes11x11, you: &SnakeId) -> f32 {
+fn evaluate_for_player(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> f32 {
     cellboard.get_health(you) as f32 / 10.0
         + cellboard.get_length(you) as f32 * 5.0
         + cellboard
@@ -217,7 +221,7 @@ mod tests {
     fn test_simulate_moves() {
         let board = test_board();
         println!("{}", board);
-        let simulations = board.simulate(&Simulator {}, board.get_snake_ids().to_vec());
+        let simulations = board.simulate(&Simulator {}, &board.get_snake_ids());
         let simulation: Vec<(Action<4>, CellBoard4Snakes11x11)> = simulations.collect();
         assert_eq!(6, simulation.len());
     }
@@ -228,12 +232,6 @@ mod tests {
         let threads = std::thread::available_parallelism().unwrap().get();
         println!("Threads: {}", threads);
     }
-
-    #[test]
-    fn test_eval() {
-        // TODO
-    }
-
     #[test]
     fn test_possible_moves() {
         let board = test_board();

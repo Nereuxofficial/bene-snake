@@ -185,7 +185,7 @@ mod tests {
         ) -> Vec<StandardCellBoard4Snakes11x11> {
             simulated_boards
                 .iter()
-                .flat_map(|x| x.simulate(&Simulator {}, x.get_snake_ids().to_vec()))
+                .flat_map(|x| x.simulate(&Simulator {}, &x.get_snake_ids()))
                 .map(|x| x.1)
                 .collect()
         }
