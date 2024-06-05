@@ -89,10 +89,10 @@ fn paranoid_minimax(
     for (score, mv, depth) in recursive_scores {
         buckets[mv.as_index()].push((score, mv, depth));
     }
-    get_best_move_from_buckets(buckets.as_slice(), depth)
+    get_best_move_from_buckets(buckets.as_slice())
 }
 
-fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>], depth: i64) -> (f32, Move, i64) {
+fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>]) -> (f32, Move, i64) {
     buckets
         .iter()
         .filter_map(|bucket| {
@@ -126,7 +126,6 @@ pub fn evaluate_board(
     }
     let res = evaluate_for_player(cellboard, you)
         - snake_ids
-            .clone()
             .iter()
             .filter(|&id| id != you)
             .map(|id| evaluate_for_player(cellboard, id))
@@ -236,7 +235,7 @@ mod tests {
     fn test_possible_moves() {
         let board = test_board();
         let head = board.get_head_as_native_position(board.you_id());
-        let moves: Vec<Move> = board.possible_moves(&head).map(|(m, i)| m).collect();
+        let moves: Vec<Move> = board.possible_moves(&head).map(|(m, _)| m).collect();
         let reasonable_moves = board
             .reasonable_moves_for_each_snake()
             .filter_map(|(id, moves)| {

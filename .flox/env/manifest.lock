@@ -1,0 +1,94 @@
+{
+  "lockfile-version": 0,
+  "manifest": {
+    "hook": {},
+    "install": {
+      "rustup": {
+        "pkg-path": "rustup"
+      }
+    },
+    "options": {
+      "systems": [
+        "x86_64-linux"
+      ]
+    },
+    "profile": {},
+    "registry": {
+      "defaults": {
+        "subtrees": null
+      },
+      "inputs": {
+        "nixpkgs": {
+          "from": {
+            "owner": "NixOS",
+            "ref": "release-23.11",
+            "repo": "nixpkgs",
+            "type": "github"
+          },
+          "subtrees": [
+            "legacyPackages"
+          ]
+        }
+      },
+      "priority": [
+        "nixpkgs"
+      ]
+    },
+    "vars": {}
+  },
+  "packages": {
+    "x86_64-linux": {
+      "rustup": {
+        "attr-path": [
+          "legacyPackages",
+          "x86_64-linux",
+          "rustup"
+        ],
+        "info": {
+          "broken": false,
+          "description": "The Rust toolchain installer",
+          "license": null,
+          "pname": "rustup",
+          "unfree": false,
+          "version": "1.26.0"
+        },
+        "input": {
+          "attrs": {
+            "lastModified": 1713185974,
+            "narHash": "sha256-cJpLrxPWLmXPcWhmOkjb/XOFVHL1oXnMiCqtJt1nCns=",
+            "owner": "NixOS",
+            "repo": "nixpkgs",
+            "rev": "674b3abfcc2b7ff4341f9e25781c644a3b7dc541",
+            "type": "github"
+          },
+          "fingerprint": "c0458f32917eee68d86187c886b2d0fa878f26a2a32ead02aa1d8ac4c5822b52",
+          "url": "github:NixOS/nixpkgs/674b3abfcc2b7ff4341f9e25781c644a3b7dc541"
+        },
+        "priority": 5
+      }
+    }
+  },
+  "registry": {
+    "defaults": {
+      "subtrees": null
+    },
+    "inputs": {
+      "nixpkgs": {
+        "from": {
+          "lastModified": 1713185974,
+          "narHash": "sha256-cJpLrxPWLmXPcWhmOkjb/XOFVHL1oXnMiCqtJt1nCns=",
+          "owner": "NixOS",
+          "repo": "nixpkgs",
+          "rev": "674b3abfcc2b7ff4341f9e25781c644a3b7dc541",
+          "type": "github"
+        },
+        "subtrees": [
+          "legacyPackages"
+        ]
+      }
+    },
+    "priority": [
+      "nixpkgs"
+    ]
+  }
+}

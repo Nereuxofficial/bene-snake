@@ -11,11 +11,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  bench:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        toolchain: [nightly]
+        toolchain: [stable, nightly]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
