@@ -69,7 +69,7 @@ fn paranoid_minimax(
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
-        return (evaluate_board(game, you, snake_ids), Move::Down, depth);
+        return (evaluate_board(&game, you, snake_ids), Move::Down, depth);
     }
     #[cfg(not(feature = "bench"))]
     if start.elapsed() + DELAY > Duration::from_millis(500) || depth == 0 {
