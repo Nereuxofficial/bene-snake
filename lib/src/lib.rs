@@ -132,7 +132,7 @@ pub fn evaluate_board(
             .sum::<f32>()
             / snake_ids.len() as f32;
     #[cfg(feature = "caching")]
-    EVAL_CACHE.insert(cellboard, res);
+    EVAL_CACHE.insert(*cellboard, res);
     res
 }
 
