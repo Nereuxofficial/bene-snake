@@ -2,7 +2,6 @@ use crate::{evaluate_board, Simulator};
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
 use battlesnake_game_types::types::{Action, SimulableGame, SnakeId};
 use std::borrow::Cow;
-use std::cell::Cell;
 
 struct Node {
     eval: f32,

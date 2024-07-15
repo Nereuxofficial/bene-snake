@@ -38,3 +38,6 @@ sentry-tracing = "0.33"
 [features]
 bench = ["lib/bench"]
 caching = ["lib/caching"]
+
+[profile.release]
+lto = true
