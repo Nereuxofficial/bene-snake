@@ -4,7 +4,7 @@ use battlesnake_game_types::types::{Action, SimulableGame, SnakeId};
 use std::borrow::Cow;
 
 struct Node {
-    eval: f32,
+    eval: u16,
     state: CellBoard4Snakes11x11,
     children: Vec<Node>,
 }
@@ -54,15 +54,5 @@ impl Node {
             root.add_child(child);
         }
         root
-    }
-
-    fn get_subtrees(&self) -> &Vec<Node> {
-        &self.children
-    }
-    fn get_state(&self) -> &CellBoard4Snakes11x11 {
-        &self.state
-    }
-    fn get_eval(&self) -> f32 {
-        self.eval
     }
 }

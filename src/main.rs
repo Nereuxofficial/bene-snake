@@ -5,7 +5,7 @@ use axum::{Json, Router};
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame};
 use battlesnake_game_types::wire_representation::Game;
 #[cfg(feature = "caching")]
-use lib::EVAL_CACHE;
+use lib::EVIL_CACHE;
 use lib::{calc_move, decode_state, GameStates};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::{json, Value};
@@ -59,7 +59,7 @@ async fn end(State(game_states): State<GameStates>, body: String) -> Response {
 
     game_states.lock().unwrap().remove(&game_state.game.id);
     #[cfg(feature = "caching")]
-    EVAL_CACHE.clear();
+    EVIL_CACHE.clear();
     Response::default()
 }
 

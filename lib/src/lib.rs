@@ -60,12 +60,12 @@ fn paranoid_minimax(
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
     start: &Instant,
-) -> (f32, Move, i64) {
+) -> (u16, Move, i64) {
     if is_won(game, you) {
-        return (f32::INFINITY, Move::Down, depth);
+        return (u16::MAX, Move::Down, depth);
     }
     if !game.is_alive(you) {
-        return (f32::NEG_INFINITY, Move::Down, depth);
+        return (0, Move::Down, depth);
     }
     #[cfg(feature = "bench")]
     if depth == 0 {
@@ -78,7 +78,7 @@ fn paranoid_minimax(
     let simulations: Vec<(Action<4>, CellBoard4Snakes11x11)> = game
         .simulate(&Simulator {}, &game.get_snake_ids())
         .collect();
-    let recursive_scores: Vec<(f32, Move, i64)> = simulations
+    let recursive_scores: Vec<(u16, Move, i64)> = simulations
         .par_iter()
         .map(|(action, b)| {
             let res = paranoid_minimax(*b, depth - 1, you, snake_ids.clone(), start);
@@ -92,7 +92,7 @@ fn paranoid_minimax(
     get_best_move_from_buckets(buckets.as_slice())
 }
 
-fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>]) -> (f32, Move, i64) {
+fn get_best_move_from_buckets(buckets: &[Vec<(u16, Move, i64)>]) -> (u16, Move, i64) {
     buckets
         .iter()
         .filter_map(|bucket| {
@@ -112,16 +112,16 @@ fn get_best_move_from_buckets(buckets: &[Vec<(f32, Move, i64)>]) -> (f32, Move, 
 
 /// Currently &caching costs us more than it saves since the eval function is so fast
 #[cfg(feature = "caching")]
-pub static EVAL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11x11, f32>> =
+pub static EVIL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11x11, u16>> =
     once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
 pub fn evaluate_board(
     cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
     snake_ids: Cow<Vec<SnakeId>>,
-) -> f32 {
+) -> u16 {
     #[cfg(feature = "caching")]
-    if let Some(cached) = EVAL_CACHE.get(&cellboard) {
+    if let Some(cached) = EVIL_CACHE.get(&cellboard) {
         return *cached;
     }
     let res = evaluate_for_player(cellboard, you)
@@ -129,20 +129,20 @@ pub fn evaluate_board(
             .iter()
             .filter(|&id| id != you)
             .map(|id| evaluate_for_player(cellboard, id))
-            .sum::<f32>()
-            / snake_ids.len() as f32;
+            .sum::<u16>()
+            / snake_ids.len() as u16;
     #[cfg(feature = "caching")]
-    EVAL_CACHE.insert(*cellboard, res);
+    EVIL_CACHE.insert(*cellboard, res);
     res
 }
 
-fn evaluate_for_player(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> f32 {
-    cellboard.get_health(you) as f32 / 10.0
-        + cellboard.get_length(you) as f32 * 5.0
+fn evaluate_for_player(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
+    cellboard.get_health(you) as u16
+        + cellboard.get_length(you) as u16 / 10
         + cellboard
             .possible_moves(&cellboard.get_head_as_native_position(you))
-            .count()
-            .pow(2) as f32
+            .count() as u16
+            * 2
 }
 
 #[derive(Debug)]
