@@ -10,7 +10,7 @@ struct Node {
 }
 
 impl Node {
-    fn new(state: CellBoard4Snakes11x11, you: &SnakeId, snake_ids: Cow<Vec<SnakeId>>) -> Node {
+    fn new(state: CellBoard4Snakes11x11, you: &SnakeId, snake_ids: Cow<[SnakeId]>) -> Node {
         Node {
             eval: evaluate_board(&state, you, snake_ids),
             children: Vec::with_capacity(16),
@@ -35,15 +35,15 @@ impl Node {
         initial_state: CellBoard4Snakes11x11,
         depth: usize,
         you: &SnakeId,
-        snake_ids: Cow<Vec<SnakeId>>,
+        snake_ids: Cow<[SnakeId]>,
     ) -> Self {
-        let mut children: Box<dyn Iterator<Item = (Action<4>, CellBoard4Snakes11x11)> + '_> =
+        let children: Box<dyn Iterator<Item = (Action<4>, CellBoard4Snakes11x11)> + '_> =
             initial_state.simulate(&Simulator {}, &snake_ids);
         let mut root = Node::new(initial_state, you, snake_ids.clone());
         if depth == 0 {
             return root;
         }
-        while let Some((action, state)) = children.next() {
+        for (action, state) in children {
             let mut child = Node::new(state, you, snake_ids.clone());
             child.add_child(Node::generate_depth_limited(
                 state,

@@ -1,5 +1,6 @@
 #![feature(portable_simd)]
 
+mod mcts;
 mod tree;
 
 use battlesnake_game_types::compact_representation::dimensions::Dimensions;
@@ -58,7 +59,7 @@ fn paranoid_minimax(
     game: CellBoard4Snakes11x11,
     depth: i64,
     you: &SnakeId,
-    snake_ids: Cow<Vec<SnakeId>>,
+    snake_ids: Cow<[SnakeId]>,
     start: &Instant,
 ) -> (u16, Move, i64) {
     if is_won(game, you) {
@@ -118,10 +119,10 @@ pub static EVIL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11
 pub fn evaluate_board(
     cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
-    snake_ids: Cow<Vec<SnakeId>>,
+    snake_ids: Cow<[SnakeId]>,
 ) -> u16 {
     #[cfg(feature = "caching")]
-    if let Some(cached) = EVIL_CACHE.get(&cellboard) {
+    if let Some(cached) = EVIL_CACHE.get(cellboard) {
         return *cached;
     }
     let res = evaluate_for_player(cellboard, you)
@@ -138,7 +139,7 @@ pub fn evaluate_board(
 
 fn evaluate_for_player(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
     cellboard.get_health(you) as u16
-        + cellboard.get_length(you) as u16 / 10
+        + cellboard.get_length(you) / 10
         + cellboard
             .possible_moves(&cellboard.get_head_as_native_position(you))
             .count() as u16
