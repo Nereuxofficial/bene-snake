@@ -29,4 +29,3 @@ rayon = "1.10.0"
 
 [features]
 bench = []
-caching = []

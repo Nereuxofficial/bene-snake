@@ -31,9 +31,8 @@ tracing-tree = "0.3.1"
 sentry-tracing = "0.33"
 
 [features]
-default = ["caching"]
+default = []
 bench = ["lib/bench"]
-caching = ["lib/caching"]
 
 [profile.release]
 lto = true

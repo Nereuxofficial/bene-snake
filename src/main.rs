@@ -4,8 +4,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame};
 use battlesnake_game_types::wire_representation::Game;
-#[cfg(feature = "caching")]
-use lib::EVIL_CACHE;
 use lib::{calc_move, decode_state, GameStates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -24,7 +22,7 @@ async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<V
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
     let cellboard = decode_state(body, game_states).unwrap();
-    let chosen_move = calc_move(cellboard, 50, start).to_string();
+    let chosen_move = calc_move(cellboard, 55, start).to_string();
     info!("Calculation took: {:?}", start.elapsed());
     Json(json!({"move": chosen_move}))
 }
@@ -54,8 +52,6 @@ async fn end(State(game_states): State<GameStates>, body: String) -> Response {
     }
 
     game_states.lock().unwrap().remove(&game_state.game.id);
-    #[cfg(feature = "caching")]
-    EVIL_CACHE.clear();
     Response::default()
 }
 

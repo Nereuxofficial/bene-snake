@@ -8,8 +8,8 @@ use battlesnake_game_types::compact_representation::standard::{CellBoard, CellBo
 use battlesnake_game_types::compact_representation::CellNum;
 use battlesnake_game_types::types::{
     Action, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-    NeighborDeterminableGame, SimulableGame, SimulatorInstruments, SnakeIDGettableGame, SnakeIDMap,
-    SnakeId, VictorDeterminableGame, YouDeterminableGame,
+    NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
+    SnakeIDGettableGame, SnakeIDMap, SnakeId, VictorDeterminableGame, YouDeterminableGame,
 };
 use battlesnake_game_types::wire_representation::Game;
 use rayon::prelude::*;
@@ -76,8 +76,9 @@ fn paranoid_minimax(
     if start.elapsed() + DELAY > Duration::from_millis(500) || depth == 0 {
         return (evaluate_board(&game, you, snake_ids), Move::Down, depth);
     }
+    let mut moves = game.reasonable_moves_for_each_snake();
     let simulations: Vec<(Action<4>, CellBoard4Snakes11x11)> = game
-        .simulate(&Simulator {}, &game.get_snake_ids())
+        .simulate_with_moves(&Simulator {}, &mut moves)
         .collect();
     let recursive_scores: Vec<(u16, Move, i64)> = simulations
         .par_iter()
@@ -111,20 +112,11 @@ fn get_best_move_from_buckets(buckets: &[Vec<(u16, Move, i64)>]) -> (u16, Move, 
         .unwrap()
 }
 
-/// Currently &caching costs us more than it saves since the eval function is so fast
-#[cfg(feature = "caching")]
-pub static EVIL_CACHE: once_cell::sync::Lazy<dashmap::DashMap<CellBoard4Snakes11x11, u16>> =
-    once_cell::sync::Lazy::new(dashmap::DashMap::new);
-
 pub fn evaluate_board(
     cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
     snake_ids: Cow<[SnakeId]>,
 ) -> u16 {
-    #[cfg(feature = "caching")]
-    if let Some(cached) = EVIL_CACHE.get(cellboard) {
-        return *cached;
-    }
     let res = evaluate_for_player(cellboard, you)
         - snake_ids
             .iter()
@@ -132,8 +124,6 @@ pub fn evaluate_board(
             .map(|id| evaluate_for_player(cellboard, id))
             .sum::<u16>()
             / snake_ids.len() as u16;
-    #[cfg(feature = "caching")]
-    EVIL_CACHE.insert(*cellboard, res);
     res
 }
 

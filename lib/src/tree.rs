@@ -1,6 +1,6 @@
 use crate::{evaluate_board, Simulator};
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
-use battlesnake_game_types::types::{Action, SimulableGame, SnakeId};
+use battlesnake_game_types::types::{ReasonableMovesGame, SimulableGame, SnakeId};
 use std::borrow::Cow;
 
 struct Node {
@@ -37,8 +37,8 @@ impl Node {
         you: &SnakeId,
         snake_ids: Cow<[SnakeId]>,
     ) -> Self {
-        let children: Box<dyn Iterator<Item = (Action<4>, CellBoard4Snakes11x11)> + '_> =
-            initial_state.simulate(&Simulator {}, &snake_ids);
+        let mut reasonable_moves = initial_state.reasonable_moves_for_each_snake();
+        let children = initial_state.simulate_with_moves(&Simulator {}, &mut reasonable_moves);
         let mut root = Node::new(initial_state, you, snake_ids.clone());
         if depth == 0 {
             return root;
