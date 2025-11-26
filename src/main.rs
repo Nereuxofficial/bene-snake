@@ -57,7 +57,8 @@ async fn end(State(game_states): State<GameStates>, body: String) -> Response {
 async fn start(State(game_states): State<GameStates>, body: String) -> Response {
     let game_state: Game = serde_json::from_str(&body).unwrap();
     info!(
-        "Game started with {} snakes",
+        "Game {} started with {} snakes",
+        body,
         game_state.get_snake_ids().len()
     );
     let snake_id_map = build_snake_id_map(&game_state);
