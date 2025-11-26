@@ -8,7 +8,7 @@ use lib::{calc_move, decode_state, GameStates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tracing::{info, info_span, instrument};
+use tracing::{info, info_span};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Registry;
@@ -17,7 +17,6 @@ use tracing_subscriber::Registry;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[instrument(skip(game_states))]
 async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);

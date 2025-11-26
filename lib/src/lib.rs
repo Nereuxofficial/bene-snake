@@ -26,7 +26,6 @@ pub const DELAY: Duration = Duration::from_millis(150);
 
 pub type GameStates = Arc<Mutex<HashMap<String, SnakeIDMap>>>;
 
-#[instrument]
 pub fn decode_state(
     mut text: String,
     game_states: GameStates,
@@ -39,7 +38,6 @@ pub fn decode_state(
     Ok(cellboard)
 }
 
-#[instrument(skip(cellboard, start))]
 pub fn calc_move(cellboard: CellBoard4Snakes11x11, depth: i64, start: Instant) -> Move {
     let you = cellboard.you_id();
     let snake_ids = cellboard.get_snake_ids();
