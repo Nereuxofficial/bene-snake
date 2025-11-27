@@ -37,3 +37,7 @@ bench = ["lib/bench"]
 [profile.release]
 lto = true
 codegen-units = 1
+
+[profile.bench]
+debug = true
+opt-level = 3

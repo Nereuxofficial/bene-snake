@@ -18,9 +18,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-#[allow(unused_imports)]
-use tracing::info;
-use tracing::instrument;
 
 pub const DELAY: Duration = Duration::from_millis(150);
 
@@ -31,7 +28,7 @@ pub fn decode_state(
     game_states: GameStates,
 ) -> color_eyre::Result<CellBoard4Snakes11x11> {
     let game_states = game_states.lock().unwrap();
-    let decoded: Game = unsafe { simd_json::serde::from_str(&mut text) }?;
+    let decoded: Game = serde_json::from_str(&text)?;
     let cellboard = decoded
         .as_cell_board(HashMap::get(&game_states, &decoded.game.id).unwrap())
         .unwrap();
@@ -80,6 +77,7 @@ fn paranoid_minimax(
         .collect();
     let recursive_scores: Vec<(u16, Move, i64)> = simulations
         .par_iter()
+        .filter(|(_, b)| evaluate_board(b, you, snake_ids.clone()) > 0)
         .map(|(action, b)| {
             let res = paranoid_minimax(*b, depth - 1, you, snake_ids.clone(), start);
             (res.0, action.own_move(), res.2)
@@ -126,8 +124,8 @@ pub fn evaluate_board(
 }
 
 fn evaluate_for_player(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
-    cellboard.get_health(you) as u16
-        + cellboard.get_length(you) / 10
+    cellboard.get_health(you) as u16 / 10
+        + cellboard.get_length(you)
         + cellboard
             .possible_moves(&cellboard.get_head_as_native_position(you))
             .count() as u16
