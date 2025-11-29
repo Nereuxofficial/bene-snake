@@ -71,6 +71,15 @@ impl Node {
             visits: AtomicU16::new(0),
         }
     }
+    pub fn get_depth(&self) -> u32 {
+        self.next_nodes
+            .lock()
+            .unwrap()
+            .values()
+            .map(|n| n.get_depth() + 1)
+            .max()
+            .unwrap_or(0)
+    }
     pub fn best_child(&self, c: f32) -> Option<(Action<4>, Arc<Node>)> {
         self.next_nodes
             .lock()
@@ -128,12 +137,11 @@ impl Node {
         let mut rng = rand::rng();
         let mut cur_board = self.board;
         while !cur_board.is_over() {
-            let moves: Vec<_> = cur_board
+            let moves = cur_board
                 .random_reasonable_move_for_each_snake(&mut rng)
-                .map(|(sid, mv)| (sid, [mv]))
-                .collect();
+                .map(|(sid, mv)| (sid, [mv]));
             let next_board = cur_board
-                .simulate_with_moves(&Instr, moves.iter().map(|(sid, mv)| (*sid, mv.as_slice())))
+                .simulate_with_moves(&Instr, moves)
                 .next()
                 .unwrap()
                 .1;
@@ -153,9 +161,9 @@ impl Node {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.wins
             .fetch_add(result, std::sync::atomic::Ordering::AcqRel);
-        self.parent_node
-            .upgrade()
-            .map(|parent| parent.backpropagate(result));
+        if let Some(parent) = self.parent_node.upgrade() {
+            parent.backpropagate(result)
+        }
     }
 }
 

@@ -23,6 +23,12 @@ minimax = "0.5.3"
 rayon = "1.10.0"
 rand = { version = "0.9.2", features = ["simd_support"] }
 
+[dev-dependencies]
+criterion = "0.4"
 
 [features]
 bench = []
+
+[[bench]]
+name = "mcts_rollout"
+harness = false
