@@ -478,7 +478,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         let food_to_add = if !self.cells.iter().any(|c| c.is_food()) {
             min_food
         } else {
-            usize::from(rng.gen_bool(food_spawn_chance))
+            usize::from(rng.random_bool(food_spawn_chance))
         };
 
         if food_to_add == 0 {

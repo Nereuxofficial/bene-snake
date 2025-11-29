@@ -7,7 +7,7 @@ use crate::types::*;
 use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
 use itertools::Itertools;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use rand::Rng;
 use std::borrow::Borrow;
 use std::collections::HashMap;

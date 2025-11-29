@@ -1,26 +1,55 @@
-use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use battlesnake_game_types::types::{build_snake_id_map, SnakeIDGettableGame};
+use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
+use battlesnake_game_types::types::{
+    build_snake_id_map, Move, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame,
+};
 use battlesnake_game_types::wire_representation::Game;
-use lib::{calc_move, decode_state, GameStates};
+use lib::mcts::{mcts_search, Node};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tracing::info;
-// TODO: Implement MCTS
 
+pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock::new();
+pub const PING: u64 = 60;
+pub const TIME_TO_MOVE: u64 = 500 - 2 * PING;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-async fn get_move(State(game_states): State<GameStates>, body: String) -> Json<Value> {
+pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
+    let game: Game = serde_json::from_str(&text)?;
+    let binding = GAME_STATES.get().unwrap().lock().unwrap();
+    let snake_id_map = binding.get(&game.game.id).unwrap();
+    Ok(game.as_cell_board(snake_id_map).unwrap())
+}
+async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
-    let cellboard = decode_state(body, game_states).unwrap();
-    let chosen_move = calc_move(cellboard, 55, start).to_string();
-    info!("Calculation took: {:?}", start.elapsed());
-    Json(json!({"move": chosen_move}))
+    let board = decode_state(body).unwrap();
+    let you = board.you_id().clone();
+    let root_node = Arc::new(Node::new_root(board.clone(), &you));
+    let root_node_clone = root_node.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        mcts_search(root_node_clone, &you);
+    });
+    tokio::time::sleep(Duration::from_millis(TIME_TO_MOVE)).await;
+    let chosen_move = root_node
+        .best_child(0.0)
+        .map(|c| c.0.own_move())
+        .unwrap_or_else(|| {
+            info!("Could not get move in game!");
+            Move::Down
+        });
+    info!(
+        "Got move {chosen_move} in {:?} with depth {}",
+        start.elapsed(),
+        root_node.get_depth()
+    );
+    let lowercase_move = chosen_move.to_string().to_lowercase();
+    Json(json!({"move": lowercase_move}))
 }
 
 async fn info() -> Json<Value> {
@@ -33,19 +62,18 @@ async fn info() -> Json<Value> {
     }))
 }
 
-async fn end(State(game_states): State<GameStates>, body: String) -> Response {
+async fn end(body: String) -> Response {
     let game_state: Game = serde_json::from_str(&body).unwrap();
     if game_state.you_are_winner() {
-        info!("We won the game");
+        info!("We won the game {}", game_state.game.id);
     } else {
-        info!("We lost the game");
+        info!("We lost the game {}", game_state.game.id);
     }
 
-    game_states.lock().unwrap().remove(&game_state.game.id);
     Response::default()
 }
 
-async fn start(State(game_states): State<GameStates>, body: String) -> Response {
+async fn start(body: String) -> Response {
     let game_state: Game = serde_json::from_str(&body).unwrap();
     info!(
         "Game {} started with {} snakes",
@@ -53,7 +81,8 @@ async fn start(State(game_states): State<GameStates>, body: String) -> Response 
         game_state.get_snake_ids().len()
     );
     let snake_id_map = build_snake_id_map(&game_state);
-    game_states
+    GAME_STATES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         .unwrap()
         .insert(game_state.game.id.clone(), snake_id_map);
@@ -75,15 +104,13 @@ async fn main() -> color_eyre::Result<()> {
 
     tracing_subscriber::fmt().init();
 
-    let gamestates: GameStates = GameStates::new(Mutex::new(HashMap::new()));
     info!("Starting battle-snake server...");
     let app = Router::new()
         .route("/", get(info))
         .route("/move", post(get_move))
         .route("/info", get(info))
         .route("/start", post(start))
-        .route("/end", post(end))
-        .with_state(gamestates);
+        .route("/end", post(end));
     let listener = tokio::net::TcpListener::bind(format!(
         "0.0.0.0:{}",
         std::env::var("PORT").expect("Please set the PORT environment variable")

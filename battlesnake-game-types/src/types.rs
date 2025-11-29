@@ -25,7 +25,7 @@ pub struct Vector {
 pub const N_MOVES: usize = 4;
 
 /// Represents a move
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
 pub enum Move {
     #[allow(missing_docs)]
     Left,
@@ -208,7 +208,7 @@ pub trait VictorDeterminableGame: std::fmt::Debug + SnakeIDGettableGame {
     fn alive_snake_count(&self) -> usize;
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 /// Represents moves taken for a given simulation
 pub struct Action<const N_SNAKES: usize> {
