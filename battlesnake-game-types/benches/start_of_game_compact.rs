@@ -16,7 +16,7 @@ fn bench_this(compact: &StandardCellBoard4Snakes11x11, instruments: &Instruments
     compact
         .simulate_with_moves(
             instruments,
-            vec![
+            &vec![
                 (SnakeId(0), [Move::Up].as_slice()),
                 (SnakeId(1), [Move::Right].as_slice()),
                 (SnakeId(2), [Move::Down].as_slice()),

@@ -1,5 +1,6 @@
 //! various types that are useful for working with battlesnake
 use crate::wire_representation::{Game, Position};
+use itertools::Itertools;
 use rand::Rng;
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
@@ -269,7 +270,7 @@ pub trait SimulableGame<T: SimulatorInstruments, const N_SNAKES: usize>:
         let build = snake_ids
             .iter()
             .map(|s| (s.clone(), moves_to_simulate.as_slice()));
-        self.simulate_with_moves(instruments, build)
+        self.simulate_with_moves(instruments, &build.into_iter().collect_vec())
     }
     /// simulates the next possible states for a game with a given set of snakes and moves, producing a list of the new games,
     /// along with the moves that got to that position
@@ -277,7 +278,7 @@ pub trait SimulableGame<T: SimulatorInstruments, const N_SNAKES: usize>:
     fn simulate_with_moves<S>(
         &self,
         instruments: &T,
-        snake_ids_and_moves: impl IntoIterator<Item = (Self::SnakeIDType, S)>,
+        snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<N_SNAKES>, Self)> + '_>
     where
         S: Borrow<[Move]>;

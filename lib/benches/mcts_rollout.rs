@@ -13,7 +13,7 @@ fn bench_rollout_start_of_game(c: &mut Criterion) {
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
     let you = compact.you_id().clone();
-    let node = Arc::new(Node::new_root(compact, &you));
+    let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_start_of_game", |b| {
         b.iter(|| {
@@ -30,7 +30,7 @@ fn bench_rollout_late_stage(c: &mut Criterion) {
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
     let you = compact.you_id().clone();
-    let node = Arc::new(Node::new_root(compact, &you));
+    let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_late_stage", |b| {
         b.iter(|| {
@@ -47,7 +47,7 @@ fn bench_rollout_cornered(c: &mut Criterion) {
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
     let you = compact.you_id().clone();
-    let node = Arc::new(Node::new_root(compact, &you));
+    let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_cornered", |b| {
         b.iter(|| {
@@ -64,7 +64,7 @@ fn bench_rollout_4_snakes(c: &mut Criterion) {
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
     let you = compact.you_id().clone();
-    let node = Arc::new(Node::new_root(compact, &you));
+    let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_4_snakes", |b| {
         b.iter(|| {
@@ -89,7 +89,7 @@ fn bench_rollout_multiple_runs(c: &mut Criterion) {
             BenchmarkId::from_parameter(num_rollouts),
             num_rollouts,
             |b, &num_rollouts| {
-                let node = Arc::new(Node::new_root(compact.clone(), &you));
+                let node = Arc::new(Node::new_root(compact.clone()));
                 b.iter(|| {
                     for _ in 0..num_rollouts {
                         black_box(node.clone().rollout(black_box(&you)));
@@ -135,7 +135,7 @@ fn bench_rollout_scenarios(c: &mut Criterion) {
             if let Ok(compact) = g.as_cell_board(&snake_id_mapping) {
                 let compact: CellBoard4Snakes11x11 = compact;
                 let you = compact.you_id().clone();
-                let node = Arc::new(Node::new_root(compact, &you));
+                let node = Arc::new(Node::new_root(compact));
 
                 group.bench_with_input(BenchmarkId::from_parameter(name), &node, |b, node| {
                     b.iter(|| {
@@ -162,7 +162,7 @@ fn bench_mcts_search_limited(c: &mut Criterion) {
 
     // Note: This would require exposing an iteration parameter in mcts_search
     // For now, we'll just benchmark the rollout which is the core component
-    let node = Arc::new(Node::new_root(compact, &you));
+    let node = Arc::new(Node::new_root(compact));
 
     group.bench_function("50_rollouts", |b| {
         b.iter(|| {
@@ -186,7 +186,7 @@ fn bench_node_creation(c: &mut Criterion) {
 
     c.bench_function("node_creation", |b| {
         b.iter(|| {
-            black_box(Node::new_root(black_box(compact.clone()), black_box(&you)));
+            black_box(Node::new_root(black_box(compact.clone())));
         })
     });
 }

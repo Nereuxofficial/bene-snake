@@ -7,6 +7,7 @@ use battlesnake_game_types::{
         VictorDeterminableGame,
     },
 };
+use itertools::Itertools;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use tracing_flame::FlameLayer;
 use tracing_subscriber::{fmt::Layer, prelude::*, Registry};
@@ -33,7 +34,7 @@ fn run_from_fixture_till_end(
             .map(|(id, m)| (id, [m]));
 
         let new_game = game
-            .simulate_with_moves(&instrument, next_move)
+            .simulate_with_moves(&instrument, &next_move.collect_vec())
             .next()
             .unwrap()
             .1;
@@ -66,7 +67,7 @@ fn main() {
         tracing::subscriber::set_global_default(subscriber).expect("Could not set global default");
     };
 
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
     let mut total_iterations = 0;
     let mut game_lengths = Vec::new();
 

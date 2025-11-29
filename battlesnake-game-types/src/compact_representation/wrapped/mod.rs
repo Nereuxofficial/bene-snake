@@ -220,7 +220,7 @@ impl<
     fn simulate_with_moves<S>(
         &self,
         instruments: &T,
-        snake_ids_and_moves: impl IntoIterator<Item = (Self::SnakeIDType, S)>,
+        snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, Self)> + '_>
     where
         S: Borrow<[Move]>,
@@ -336,7 +336,7 @@ mod test {
         let snake_ids = build_snake_id_map(&g);
         let orig_wrapped_cell: CellBoard4SnakesSquare11x11 =
             g.as_wrapped_cell_board(&snake_ids).unwrap();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         run_move_test(
             orig_wrapped_cell,
             snake_ids.clone(),
@@ -356,7 +356,7 @@ mod test {
         let instruments = Instruments {};
         let wrapped_for_down = orig_wrapped_cell
             .clone()
-            .simulate_with_moves(&instruments, move_map)
+            .simulate_with_moves(&instruments, &move_map)
             .next()
             .unwrap()
             .1;
@@ -387,17 +387,19 @@ mod test {
         );
 
         let mut wrapped = orig_wrapped_cell;
-        let mut rng = rand::rngs::SmallRng::from_entropy();
+        let mut rng = rand::rngs::SmallRng::from_os_rng();
         for _ in 0..15 {
             let move_map = wrapped
                 .random_reasonable_move_for_each_snake(&mut rng)
-                .into_iter()
                 .map(|(sid, mv)| (sid, [mv]))
                 .collect_vec();
             wrapped = wrapped
                 .simulate_with_moves(
                     &instruments,
-                    move_map.iter().map(|(sid, mv)| (*sid, mv.as_slice())),
+                    &move_map
+                        .iter()
+                        .map(|(sid, mv)| (*sid, mv.as_slice()))
+                        .collect_vec(),
                 )
                 .collect_vec()[0]
                 .1;
@@ -424,10 +426,10 @@ mod test {
             wrapped_cell = wrapped_cell
                 .simulate_with_moves(
                     &instruments,
-                    move_map
+                    &move_map
                         .iter()
                         .map(|(sid, mv)| (*sid, mv.as_slice()))
-                        .clone(),
+                        .collect_vec(),
                 )
                 .collect_vec()[0]
                 .1;
@@ -462,7 +464,7 @@ mod test {
             dbg!(&compact_ids);
             let snakes_and_moves = compact_ids.iter().map(|id| (*id, vec![Move::Up]));
             let mut results = game
-                .simulate_with_moves(&instruments, snakes_and_moves)
+                .simulate_with_moves(&instruments, &snakes_and_moves.collect_vec())
                 .collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();
@@ -487,7 +489,7 @@ mod test {
                 game
             );
             let mut results = game
-                .simulate_with_moves(&instruments, snakes_and_moves)
+                .simulate_with_moves(&instruments, &snakes_and_moves)
                 .collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();
@@ -512,7 +514,7 @@ mod test {
                 game
             );
             let mut results = game
-                .simulate_with_moves(&instruments, snakes_and_moves)
+                .simulate_with_moves(&instruments, &snakes_and_moves)
                 .collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();

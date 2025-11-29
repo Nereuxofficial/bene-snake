@@ -138,7 +138,7 @@ impl<
     fn simulate_with_moves<S>(
         &self,
         instruments: &T,
-        snake_ids_and_moves: impl IntoIterator<Item = (Self::SnakeIDType, S)>,
+        snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, Self)> + '_>
     where
         S: Borrow<[Move]>,
@@ -355,7 +355,7 @@ mod test {
         eprintln!("{}", compact);
         for mv in moves {
             let res = compact
-                .simulate_with_moves(&instruments, vec![(SnakeId(0), [mv].as_slice())])
+                .simulate_with_moves(&instruments, &vec![(SnakeId(0), [mv].as_slice())])
                 .collect_vec();
             compact = res[0].1;
             eprintln!("{}", compact);

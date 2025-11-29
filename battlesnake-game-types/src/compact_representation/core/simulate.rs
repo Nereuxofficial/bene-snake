@@ -19,14 +19,13 @@ pub fn simulate_with_moves<
 >(
     board: &'a CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
     instruments: &I,
-    snake_ids_and_moves: impl IntoIterator<Item = (SnakeId, S)>,
+    snake_ids_and_moves: &[(SnakeId, S)],
     evaluate_mode: EvaluateMode,
 ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> + 'a>
 where
     S: Borrow<[Move]>,
 {
     let start = Instant::now();
-    let snake_ids_and_moves = snake_ids_and_moves.into_iter().collect_vec();
 
     let mut snake_ids_we_are_simulating = [false; MAX_SNAKES];
     for (snake_id, _) in snake_ids_and_moves.iter() {
@@ -54,10 +53,10 @@ where
                 .borrow()
                 .iter()
                 .filter(|mv| !dead_snakes_table[snake_id.0 as usize][mv.as_index()])
-                .map(|mv| (snake_id, *mv))
+                .map(|mv| (*snake_id, *mv))
                 .collect_vec();
             if mvs.is_empty() {
-                vec![(snake_id, first_move)]
+                vec![(*snake_id, first_move)]
             } else {
                 mvs
             }
