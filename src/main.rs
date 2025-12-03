@@ -95,13 +95,11 @@ async fn start(body: String) -> Response {
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
     dotenvy::dotenv().ok();
     let _guard = sentry::init((
-        std::env::var("SENTRY_DSN").unwrap(),
+        std::env::var("GLITCHTIP_KEY").unwrap(),
         sentry::ClientOptions {
             release: sentry::release_name!(),
-            traces_sample_rate: 0.0,
             ..Default::default()
         },
     ));
