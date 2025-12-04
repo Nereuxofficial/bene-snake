@@ -35,6 +35,7 @@ bench = ["lib/bench"]
 
 [profile.release]
 lto = true
+debug = "limited"
 codegen-units = 1
 
 [profile.profiling]
