@@ -1,8 +1,9 @@
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
 use battlesnake_game_types::types::{YouDeterminableGame, build_snake_id_map};
 use battlesnake_game_types::wire_representation::Game as DEGame;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lib::mcts::Node;
+use std::hint::black_box;
 use std::sync::Arc;
 
 /// Helper function to create a node with expanded children

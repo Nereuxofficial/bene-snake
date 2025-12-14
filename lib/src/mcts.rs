@@ -127,14 +127,20 @@ impl Node {
             .unwrap_or(0)
     }
     pub fn best_child(&self, c: f32) -> Option<(Action<4>, Arc<Node>)> {
+        // Cache parent visits to avoid repeated atomic loads during iteration
+        let parent_visits = self.visits.load(Ordering::Relaxed) as f32;
+
         self.next_nodes
+            // TODO: Can we do smarter locking here? This locks the mutex possibly a long time
             .lock()
             .unwrap()
             .iter()
             .max_by(|(_, node1), (_, node2)| {
-                Self::ucb1_from_ref(node1, c, self.visits.load(Ordering::Acquire) as f32).total_cmp(
-                    &Self::ucb1_from_ref(node2, c, node2.visits.load(Ordering::Acquire) as f32),
-                )
+                Self::ucb1_from_ref(node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
+                    node2,
+                    c,
+                    parent_visits,
+                ))
             })
             .map(|(action, node)| (*action, node.clone()))
     }
@@ -165,12 +171,13 @@ impl Node {
     }
     pub fn ucb1_from_ref(node: impl AsRef<Self>, c: f32, visits_to_parent: f32) -> f32 {
         let reference = node.as_ref();
-        (reference.wins.load(Ordering::Acquire) as f32).algebraic_add(
+        // Use Relaxed ordering since we only need eventual consistency for UCB1 calculations
+        (reference.wins.load(Ordering::Relaxed) as f32).algebraic_add(
             c.algebraic_mul(
                 visits_to_parent
                     .ln()
                     .sqrt()
-                    .algebraic_div((reference.visits.load(Ordering::Acquire) + 1) as f32),
+                    .algebraic_div((reference.visits.load(Ordering::Relaxed) + 1) as f32),
             ),
         )
     }
