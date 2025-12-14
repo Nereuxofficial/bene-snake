@@ -24,11 +24,19 @@ rayon = "1.10.0"
 rand = { version = "0.9.2", features = ["simd_support"] }
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = { version = "0.7", features = ["html_reports"] }
 
 [features]
 bench = []
 
 [[bench]]
 name = "mcts_rollout"
+harness = false
+
+[[bench]]
+name = "mcts_best_child"
+harness = false
+
+[[bench]]
+name = "mcts_expand"
 harness = false

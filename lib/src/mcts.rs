@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -14,38 +14,84 @@ use battlesnake_game_types::{
     },
 };
 
-use crate::eval::evaluate_board;
+use crate::{eval::evaluate_board, non_pushable_queue::NonPushableQueue};
 
-const MAX_EXPLORE_DEPTH: u8 = 5;
+/// Iterator that generates all possible combinations of moves for each snake (Cartesian product)
+struct MoveCombinationIterator {
+    snake_moves: Vec<(SnakeId, Vec<Move>)>,
+    indices: Vec<usize>,
+    exhausted: bool,
+}
 
-/// Generate all possible combinations of moves for each snake (Cartesian product)
-fn generate_move_combinations(snake_moves: Vec<(SnakeId, Vec<Move>)>) -> Vec<Vec<(SnakeId, Move)>> {
-    if snake_moves.is_empty() {
-        return vec![vec![]];
+impl MoveCombinationIterator {
+    fn new(snake_moves: Vec<(SnakeId, Vec<Move>)>) -> Self {
+        // Empty input or any snake with no moves means we'll yield once then stop
+        let exhausted = snake_moves.iter().any(|(_, moves)| moves.is_empty());
+        let indices = vec![0; snake_moves.len()];
+        Self {
+            snake_moves,
+            indices,
+            exhausted,
+        }
     }
+}
 
-    let mut result = vec![vec![]];
+impl Iterator for MoveCombinationIterator {
+    type Item = Vec<(SnakeId, Move)>;
 
-    for (snake_id, moves) in snake_moves {
-        let mut new_result = Vec::new();
-        for combination in result {
-            for &mv in &moves {
-                let mut new_combination = combination.clone();
-                new_combination.push((snake_id, mv));
-                new_result.push(new_combination);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted {
+            return None;
+        }
+
+        // Handle empty snake_moves case: yield one empty combination
+        if self.snake_moves.is_empty() {
+            self.exhausted = true;
+            return Some(vec![]);
+        }
+
+        // Build current combination
+        let combination: Vec<(SnakeId, Move)> = self
+            .snake_moves
+            .iter()
+            .zip(&self.indices)
+            .map(|((snake_id, moves), &idx)| (*snake_id, moves[idx]))
+            .collect();
+
+        // Increment indices (like counting in mixed-radix)
+        let mut carry = true;
+        for i in (0..self.indices.len()).rev() {
+            if carry {
+                self.indices[i] += 1;
+                if self.indices[i] >= self.snake_moves[i].1.len() {
+                    self.indices[i] = 0;
+                } else {
+                    carry = false;
+                }
             }
         }
-        result = new_result;
-    }
 
-    result
+        // If we still have carry, we've exhausted all combinations
+        if carry {
+            self.exhausted = true;
+        }
+
+        Some(combination)
+    }
+}
+
+/// Generate an iterator over all possible combinations of moves for each snake (Cartesian product)
+fn generate_move_combinations(
+    snake_moves: Vec<(SnakeId, Vec<Move>)>,
+) -> impl Iterator<Item = Vec<(SnakeId, Move)>> {
+    MoveCombinationIterator::new(snake_moves)
 }
 
 pub struct Node {
     parent_node: Weak<Node>,
     board: CellBoard4Snakes11x11,
     next_nodes: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
-    possible_moves: Mutex<VecDeque<Vec<(SnakeId, Move)>>>,
+    possible_moves: NonPushableQueue<Vec<(SnakeId, Move)>>,
     wins: AtomicU16,
     visits: AtomicU16,
 }
@@ -66,7 +112,7 @@ impl Node {
             parent_node: parent,
             board,
             next_nodes: Mutex::new(BTreeMap::new()),
-            possible_moves: Mutex::new(move_combinations.into()),
+            possible_moves: NonPushableQueue::new_from_iterator(move_combinations.into_iter()),
             wins: AtomicU16::new(0),
             visits: AtomicU16::new(0),
         }
@@ -86,19 +132,17 @@ impl Node {
             .unwrap()
             .iter()
             .max_by(|(_, node1), (_, node2)| {
-                Arc::clone(node1)
-                    .ucb1(c, self.visits.load(Ordering::Acquire) as f32)
-                    .total_cmp(
-                        &Arc::clone(node2).ucb1(c, self.visits.load(Ordering::Acquire) as f32),
-                    )
+                Self::ucb1_from_ref(node1, c, self.visits.load(Ordering::Acquire) as f32).total_cmp(
+                    &Self::ucb1_from_ref(node2, c, node2.visits.load(Ordering::Acquire) as f32),
+                )
             })
             .map(|(action, node)| (*action, node.clone()))
     }
     pub fn is_fully_expanded(&self) -> bool {
-        self.possible_moves.lock().unwrap().is_empty()
+        self.possible_moves.is_empty()
     }
-    pub fn expand(self: Arc<Self>, you: &SnakeId) {
-        let Some(moves) = self.possible_moves.lock().unwrap().pop_front() else {
+    pub fn expand(self: Arc<Self>, _you: &SnakeId) {
+        let Some(moves) = self.possible_moves.pop_front() else {
             return;
         };
         // Convert Vec<(SnakeId, Move)> into the format needed for simulate_with_moves
@@ -117,15 +161,20 @@ impl Node {
         evaluate_board(&self.board, you)
     }
     pub fn ucb1(self: Arc<Self>, c: f32, visits_to_parent: f32) -> f32 {
-        (self.wins.load(Ordering::Acquire) as f32).algebraic_add(
+        Self::ucb1_from_ref(self, c, visits_to_parent)
+    }
+    pub fn ucb1_from_ref(node: impl AsRef<Self>, c: f32, visits_to_parent: f32) -> f32 {
+        let reference = node.as_ref();
+        (reference.wins.load(Ordering::Acquire) as f32).algebraic_add(
             c.algebraic_mul(
                 visits_to_parent
                     .ln()
                     .sqrt()
-                    .algebraic_div((self.visits.load(Ordering::Acquire) + 1) as f32),
+                    .algebraic_div((reference.visits.load(Ordering::Acquire) + 1) as f32),
             ),
         )
     }
+    // TODO: Implement max depth and make eval function for it.
     pub fn rollout(self: Arc<Self>, you: &SnakeId) -> u16 {
         let mut rng = rand::rng();
         let mut cur_board = self.board;
@@ -274,5 +323,66 @@ mod tests {
             visits, 0,
             "mcts_search should not perform any iterations when stop is already true"
         );
+    }
+
+    #[test]
+    fn test_move_combination_iterator() {
+        // Test empty input - should yield one empty combination
+        let empty_iter = MoveCombinationIterator::new(vec![]);
+        let empty_result: Vec<_> = empty_iter.collect();
+        assert_eq!(empty_result.len(), 1);
+        assert_eq!(empty_result[0], vec![]);
+
+        // Test single snake with multiple moves
+        let snake1 = SnakeId(0);
+        let single_snake = vec![(snake1, vec![Move::Up, Move::Down, Move::Left])];
+        let single_result: Vec<_> = MoveCombinationIterator::new(single_snake).collect();
+        assert_eq!(single_result.len(), 3);
+        assert_eq!(single_result[0], vec![(snake1, Move::Up)]);
+        assert_eq!(single_result[1], vec![(snake1, Move::Down)]);
+        assert_eq!(single_result[2], vec![(snake1, Move::Left)]);
+
+        // Test two snakes (Cartesian product)
+        let snake2 = SnakeId(1);
+        let two_snakes = vec![
+            (snake1, vec![Move::Up, Move::Down]),
+            (snake2, vec![Move::Left, Move::Right]),
+        ];
+        let two_result: Vec<_> = MoveCombinationIterator::new(two_snakes).collect();
+        assert_eq!(two_result.len(), 4); // 2 x 2 = 4
+        assert_eq!(
+            two_result[0],
+            vec![(snake1, Move::Up), (snake2, Move::Left)]
+        );
+        assert_eq!(
+            two_result[1],
+            vec![(snake1, Move::Up), (snake2, Move::Right)]
+        );
+        assert_eq!(
+            two_result[2],
+            vec![(snake1, Move::Down), (snake2, Move::Left)]
+        );
+        assert_eq!(
+            two_result[3],
+            vec![(snake1, Move::Down), (snake2, Move::Right)]
+        );
+
+        // Test three snakes
+        let snake3 = SnakeId(2);
+        let three_snakes = vec![
+            (snake1, vec![Move::Up, Move::Down]),
+            (snake2, vec![Move::Left]),
+            (snake3, vec![Move::Right, Move::Up]),
+        ];
+        let three_result: Vec<_> = MoveCombinationIterator::new(three_snakes).collect();
+        assert_eq!(three_result.len(), 4); // 2 x 1 x 2 = 4
+
+        // Test snake with no moves (should yield no combinations)
+        let no_moves = vec![
+            (snake1, vec![Move::Up]),
+            (snake2, vec![]), // No moves for this snake
+        ];
+        let no_moves_result: Vec<_> = MoveCombinationIterator::new(no_moves).collect();
+        assert_eq!(no_moves_result.len(), 0);
     }
 }
