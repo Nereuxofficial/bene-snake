@@ -30,12 +30,12 @@ async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
     let board = decode_state(body).unwrap();
-    let you = board.you_id().clone();
-    let root_node = Arc::new(Node::new_root(board.clone()));
+    let you = *board.you_id();
+    let root_node = Arc::new(Node::new_root(board));
     let root_node_clone = root_node.clone();
     let stop_bool = Arc::new(AtomicBool::new(false));
     let stop_bool_ref = stop_bool.clone();
-    let task = tokio::task::spawn_blocking(move || {
+    let _task = tokio::task::spawn_blocking(move || {
         mcts_search(root_node_clone, &you, stop_bool_ref);
     });
     tokio::time::sleep(Duration::from_millis(TIME_TO_MOVE)).await;
