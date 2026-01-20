@@ -21,7 +21,7 @@ tracing = { version = "0.1.37" }
 [dev-dependencies]
 criterion = "0.4"
 pprof = { version = "0.14", default-features=false, features = ["flamegraph", "frame-pointer"] }
-tracing-subscriber = "0.3.16"
+tracing-subscriber = "0.3.20"
 tracing-flame = "0.2.0"
 
 [[bench]]
