@@ -2,19 +2,19 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        Action, Move, RandomReasonableMovesGame, ReasonableMovesGame, SimulableGame,
-        SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        Action, HealthGettableGame, Move, RandomReasonableMovesGame, ReasonableMovesGame,
+        SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
     },
 };
 
-use crate::{eval::evaluate_board, non_pushable_queue::NonPushableQueue};
+use crate::non_pushable_queue::NonPushableQueue;
 
 /// Iterator that generates all possible combinations of moves for each snake (Cartesian product)
 struct MoveCombinationIterator {
@@ -92,8 +92,8 @@ pub struct Node {
     board: CellBoard4Snakes11x11,
     next_nodes: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
     possible_moves: NonPushableQueue<Vec<(SnakeId, Move)>>,
-    wins: AtomicU16,
-    visits: AtomicU16,
+    wins: AtomicU32,
+    visits: AtomicU32,
 }
 #[derive(Debug)]
 struct Instr;
@@ -113,8 +113,8 @@ impl Node {
             board,
             next_nodes: Mutex::new(BTreeMap::new()),
             possible_moves: NonPushableQueue::new_from_iterator(move_combinations.into_iter()),
-            wins: AtomicU16::new(0),
-            visits: AtomicU16::new(0),
+            wins: AtomicU32::new(0),
+            visits: AtomicU32::new(0),
         }
     }
     pub fn get_depth(&self) -> u32 {
@@ -130,19 +130,22 @@ impl Node {
         // Cache parent visits to avoid repeated atomic loads during iteration
         let parent_visits = self.visits.load(Ordering::Relaxed) as f32;
 
-        self.next_nodes
-            // TODO: Can we do smarter locking here? This locks the mutex possibly a long time
-            .lock()
-            .unwrap()
-            .iter()
-            .max_by(|(_, node1), (_, node2)| {
-                Self::ucb1_from_ref(node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
-                    node2,
-                    c,
-                    parent_visits,
-                ))
-            })
-            .map(|(action, node)| (*action, node.clone()))
+        // Collect entries quickly to minimize lock duration
+        let children: Vec<_> = {
+            let lock = self.next_nodes.lock().unwrap();
+            lock.iter()
+                .map(|(action, node)| (*action, node.clone()))
+                .collect()
+        };
+
+        // Compute UCB1 scores without holding the lock
+        children.into_iter().max_by(|(_, node1), (_, node2)| {
+            Self::ucb1_from_ref(node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
+                node2,
+                c,
+                parent_visits,
+            ))
+        })
     }
     pub fn is_fully_expanded(&self) -> bool {
         self.possible_moves.is_empty()
@@ -151,21 +154,21 @@ impl Node {
         let Some(moves) = self.possible_moves.pop_front() else {
             return;
         };
-        // Convert Vec<(SnakeId, Move)> into the format needed for simulate_with_moves
+
+        // Convert moves in-place to avoid intermediate allocation
         let moves_for_simulation: Vec<_> = moves.into_iter().map(|(sid, mv)| (sid, [mv])).collect();
 
-        let (action, node) = self
+        if let Some((action, next_board)) = self
             .board
             .simulate_with_moves(&Instr, &moves_for_simulation)
-            .map(|(a, b)| (a, Self::new_child(Arc::downgrade(&self), b)))
             .next()
-            .unwrap();
-        let mut next_nodes_lock = self.next_nodes.lock().unwrap();
-        next_nodes_lock.insert(action, Arc::new(node));
+        {
+            let node = Self::new_child(Arc::downgrade(&self), next_board);
+            let mut next_nodes_lock = self.next_nodes.lock().unwrap();
+            next_nodes_lock.insert(action, Arc::new(node));
+        }
     }
-    pub fn get_score(&self, you: &SnakeId) -> u16 {
-        evaluate_board(&self.board, you)
-    }
+
     pub fn ucb1(self: Arc<Self>, c: f32, visits_to_parent: f32) -> f32 {
         Self::ucb1_from_ref(self, c, visits_to_parent)
     }
@@ -181,12 +184,17 @@ impl Node {
             ),
         )
     }
-    // TODO: Implement max depth and make eval function for it.
-    pub fn rollout(self: Arc<Self>, you: &SnakeId) -> u16 {
+    /// Perform a random rollout with depth limit
+    /// Returns 1 for win, 0 for loss
+    pub fn rollout(self: Arc<Self>, you: &SnakeId) -> u32 {
+        const MAX_ROLLOUT_DEPTH: u32 = 50; // Limit depth to prevent extremely long simulations
+
         let mut rng = rand::rng();
         let mut cur_board = self.board;
         let mut moves = Vec::with_capacity(4);
-        while !cur_board.is_over() {
+        let mut depth = 0;
+
+        while !cur_board.is_over() && depth < MAX_ROLLOUT_DEPTH {
             moves.clear();
             cur_board
                 .random_reasonable_move_for_each_snake(&mut rng)
@@ -198,17 +206,26 @@ impl Node {
                 .unwrap()
                 .1;
             cur_board = next_board;
+            depth += 1;
         }
-        if cur_board.get_winner().is_some_and(|w| w == *you) {
-            1
+
+        // If we hit max depth without game ending, check if we're still alive
+        if cur_board.get_health(you) == 0 {
+            0 // We died
+        } else if cur_board.is_over() && cur_board.get_winner().is_some_and(|w| w == *you) {
+            1 // We won
+        } else if cur_board.is_over() {
+            0 // We lost
         } else {
-            0
+            // Game not over but we hit depth limit - assume survival is somewhat good
+            // Return 1 if we're still alive at depth limit, 0 otherwise
+            if cur_board.get_health(you) > 0 { 1 } else { 0 }
         }
     }
     pub fn is_terminal(&self) -> bool {
         self.board.is_over()
     }
-    pub fn backpropagate(self: Arc<Self>, result: u16) {
+    pub fn backpropagate(self: Arc<Self>, result: u32) {
         self.visits
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.wins

@@ -46,7 +46,7 @@ where
     }
 
     let ids_and_moves_product = snake_ids_and_moves
-        .into_iter()
+        .iter()
         .map(|(snake_id, moves)| {
             let first_move = moves.borrow()[0];
             let mvs = moves
