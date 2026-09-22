@@ -1,5 +1,5 @@
 [workspace]
-members = ["lib", "gym"]
+members = ["lib", "gym", "battlesnake-game-types"]
 
 [workspace.dependencies]
 battlesnake-game-types = { path = "./battlesnake-game-types" }
