@@ -10,19 +10,6 @@ ARG TARGETARCH
 RUN apt update && apt install -y protobuf-compiler musl-tools
 RUN update-ca-certificates
 
-# Install cross-compilation tools for different architectures
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-    apt install -y gcc-aarch64-linux-gnu musl-dev; \
-    fi
-
-# Add musl targets for different architectures
-RUN case "$TARGETARCH" in \
-    "amd64") rustup target add x86_64-unknown-linux-musl ;; \
-    "arm64") rustup target add aarch64-unknown-linux-musl ;; \
-    "arm") rustup target add armv7-unknown-linux-musleabihf ;; \
-    *) echo "Unsupported architecture: $TARGETARCH" && exit 1 ;; \
-    esac
-
 # Create appuser
 ENV USER=bene-snake
 ENV UID=10001
@@ -41,22 +28,15 @@ WORKDIR /bene-snake
 COPY ./ .
 COPY ./.env /.env
 
-# Set up cross-compilation environment and build for the target architecture
 RUN case "$TARGETARCH" in \
-    "amd64") \
-    export RUST_TARGET="x86_64-unknown-linux-musl" \
-    ;; \
-    "arm64") \
-    export RUST_TARGET="aarch64-unknown-linux-musl" && \
-    export CC=aarch64-linux-gnu-gcc && \
-    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
-    ;; \
-    "arm") \
-    export RUST_TARGET="armv7-unknown-linux-musleabihf" \
-    ;; \
+    "amd64") RUST_TARGET="x86_64-unknown-linux-musl" ;; \
+    "arm64") RUST_TARGET="aarch64-unknown-linux-musl" ;; \
+    "arm")   RUST_TARGET="armv7-unknown-linux-musleabihf" ;; \
+    *) echo "Unsupported architecture: $TARGETARCH" && exit 1 ;; \
     esac && \
-    cargo build --release --target $RUST_TARGET && \
-    cp target/$RUST_TARGET/release/bene-snake /bene-snake/bene-snake-binary
+    rustup target add "$RUST_TARGET" && \
+    cargo build --release --target "$RUST_TARGET" && \
+    cp "target/$RUST_TARGET/release/bene-snake" /bene-snake/bene-snake-binary
 
 
 ####################################################################################################
