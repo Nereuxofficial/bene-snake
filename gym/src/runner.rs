@@ -9,7 +9,7 @@ use battlesnake_game_types::{
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::RngExt;
 
 use lib::Agent;
 use crate::stats::GameResult;

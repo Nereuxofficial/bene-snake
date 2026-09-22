@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use battlesnake_game_types::{
     types::{Move, SnakeId},
 };
 
-use crate::mcts::{mcts_search, Node};
+use crate::mcts::{Node, mcts_search};
 
 /// Trait that defines a snake agent's decision-making interface.
 pub trait Agent: Send + Sync {

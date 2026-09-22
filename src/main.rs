@@ -96,13 +96,9 @@ async fn start(body: String) -> Response {
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     dotenvy::dotenv().ok();
-    let _guard = sentry::init((
-        std::env::var("GLITCHTIP_KEY").unwrap(),
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            ..Default::default()
-        },
-    ));
+    let mut sentry_options = sentry::ClientOptions::default();
+    sentry_options.release = sentry::release_name!();
+    let _guard = sentry::init((std::env::var("GLITCHTIP_KEY").unwrap(), sentry_options));
 
     tracing_subscriber::fmt().init();
 

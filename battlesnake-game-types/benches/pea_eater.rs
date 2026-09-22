@@ -67,7 +67,7 @@ fn main() {
         tracing::subscriber::set_global_default(subscriber).expect("Could not set global default");
     };
 
-    let mut rng = SmallRng::from_os_rng();
+    let mut rng = SmallRng::from_rng(&mut rand::rng());
     let mut total_iterations = 0;
     let mut game_lengths = Vec::new();
 

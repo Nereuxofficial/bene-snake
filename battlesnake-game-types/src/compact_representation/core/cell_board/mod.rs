@@ -4,6 +4,7 @@ use std::slice::Iter;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
+use rand::RngExt;
 
 use crate::types::EmptyCellGettableGame;
 use crate::types::SnakeIDMap;
@@ -486,7 +487,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         }
 
         let empty = self.get_empty_cells();
-        let random = empty.choose_multiple(rng, food_to_add);
+        let random = empty.sample(rng, food_to_add);
         for pos in random {
             self.cells[pos.0.as_usize()].set_food();
         }

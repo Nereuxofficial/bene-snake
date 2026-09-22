@@ -2,7 +2,7 @@ use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{Move, RandomReasonableMovesGame, ReasonableMovesGame, SnakeId},
 };
-use rand::Rng;
+use rand::RngExt;
 
 use lib::Agent;
 

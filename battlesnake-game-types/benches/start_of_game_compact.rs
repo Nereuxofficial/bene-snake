@@ -4,7 +4,8 @@ use battlesnake_game_types::{
     compact_representation::StandardCellBoard4Snakes11x11,
     types::{build_snake_id_map, Move, SimulableGame, SnakeIDGettableGame, SnakeId},
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 
 #[derive(Debug)]
 struct Instruments {}

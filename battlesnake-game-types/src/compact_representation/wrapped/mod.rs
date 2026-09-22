@@ -277,7 +277,7 @@ mod test {
     use std::collections::HashMap;
 
     use itertools::Itertools;
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, SeedableRng};
 
     use crate::{
         compact_representation::core::Cell,
@@ -387,7 +387,7 @@ mod test {
         );
 
         let mut wrapped = orig_wrapped_cell;
-        let mut rng = rand::rngs::SmallRng::from_os_rng();
+        let mut rng = rand::rngs::SmallRng::from_rng(&mut rand::rng());
         for _ in 0..15 {
             let move_map = wrapped
                 .random_reasonable_move_for_each_snake(&mut rng)
