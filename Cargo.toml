@@ -13,7 +13,7 @@ axum = "0.8.9"
 serde = "1.0.229"
 simd-json = "0.18.1"
 serde_json = "1.0.151"
-sentry = { version = "0.49.3", default-features = false }
+sentry = { version = "0.49", default-features = false, features = ["rustls"] }
 mimalloc = { version = "0.1.52", default-features = false }
 sentry-tracing = "0.49.3"
 rayon = "1.12.0"

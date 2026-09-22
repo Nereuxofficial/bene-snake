@@ -26,6 +26,7 @@ pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
     let snake_id_map = binding.get(&game.game.id).unwrap();
     Ok(game.as_cell_board(snake_id_map).unwrap())
 }
+
 async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
