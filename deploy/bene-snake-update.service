@@ -1,0 +1,6 @@
+[Unit]
+Description=Update bene-snake when no game is running
+
+[Service]
+Type=oneshot
+ExecStart=%h/containers/bene-snake/deploy/update.sh

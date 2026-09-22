@@ -11,20 +11,48 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock::new();
+static LAST_GAME_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
+const DEPLOY_QUIET_PERIOD: Duration = Duration::from_secs(60);
 pub const PING: u64 = 60;
 pub const TIME_TO_MOVE: u64 = 500 - 2 * PING;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
+    record_game_request();
     let game: Game = serde_json::from_str(&text)?;
     let binding = GAME_STATES.get().unwrap().lock().unwrap();
     let snake_id_map = binding.get(&game.game.id).unwrap();
     Ok(game.as_cell_board(snake_id_map).unwrap())
+}
+
+fn record_game_request() {
+    *LAST_GAME_REQUEST
+        .get_or_init(|| Mutex::new(Instant::now()))
+        .lock()
+        .unwrap() = Instant::now();
+}
+
+async fn deploy_ready() -> axum::http::StatusCode {
+    let active_games = GAME_STATES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap()
+        .len();
+    let quiet_for = LAST_GAME_REQUEST
+        .get_or_init(|| Mutex::new(Instant::now()))
+        .lock()
+        .unwrap()
+        .elapsed();
+    if active_games == 0 && quiet_for >= DEPLOY_QUIET_PERIOD {
+        axum::http::StatusCode::NO_CONTENT
+    } else {
+        axum::http::StatusCode::CONFLICT
+    }
 }
 
 async fn get_move(body: String) -> Json<Value> {
@@ -68,6 +96,7 @@ async fn info() -> Json<Value> {
 }
 
 async fn end(body: String) -> Response {
+    record_game_request();
     let game_state: Game = serde_json::from_str(&body).unwrap();
     if game_state.you_are_winner() {
         info!("We won the game {}", game_state.game.id);
@@ -75,10 +104,17 @@ async fn end(body: String) -> Response {
         info!("We lost the game {}", game_state.game.id);
     }
 
+    GAME_STATES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap()
+        .remove(&game_state.game.id);
+
     Response::default()
 }
 
 async fn start(body: String) -> Response {
+    record_game_request();
     let game_state: Game = serde_json::from_str(&body).unwrap();
     info!(
         "Game {} started with {} snakes",
@@ -109,7 +145,8 @@ async fn main() -> color_eyre::Result<()> {
         .route("/move", post(get_move))
         .route("/info", get(info))
         .route("/start", post(start))
-        .route("/end", post(end));
+        .route("/end", post(end))
+        .route("/deploy-ready", get(deploy_ready));
     let listener = tokio::net::TcpListener::bind(format!(
         "0.0.0.0:{}",
         std::env::var("PORT").expect("Please set the PORT environment variable")

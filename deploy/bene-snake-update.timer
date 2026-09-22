@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for bene-snake updates every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=bene-snake-update.service
+
+[Install]
+WantedBy=timers.target
