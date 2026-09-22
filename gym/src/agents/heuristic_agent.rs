@@ -45,13 +45,7 @@ impl HeuristicAgent {
         self
     }
 
-    fn score_move(
-        &self,
-        board: &CellBoard4Snakes11x11,
-        you: SnakeId,
-        mv: Move,
-    ) -> i32 {
-        let head = board.get_head_as_native_position(&you);
+    fn score_move(&self, board: &CellBoard4Snakes11x11, you: SnakeId, mv: Move) -> i32 {
         let health = board.get_health(&you);
         let length = board.get_length(&you);
 
@@ -69,10 +63,7 @@ impl HeuristicAgent {
             })
             .collect();
 
-        let Some((_, next_board)) = board
-            .simulate_with_moves(&Instr, &moves_for_sim)
-            .next()
-        else {
+        let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next() else {
             return i32::MIN; // Move results in death
         };
 
@@ -96,8 +87,7 @@ impl HeuristicAgent {
                 let head_pos = board.get_head_as_position(&you);
                 let mut min_dist = i32::MAX;
                 for food_pos in &food_positions {
-                    let dist = (head_pos.x as i32 - food_pos.x as i32).abs()
-                        + (head_pos.y as i32 - food_pos.y as i32).abs();
+                    let dist = (head_pos.x - food_pos.x).abs() + (head_pos.y - food_pos.y).abs();
                     min_dist = min_dist.min(dist);
                 }
                 // Bonus for being close to food when hungry

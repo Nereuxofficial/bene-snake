@@ -1,9 +1,8 @@
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-        NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
-        SnakeId, VictorDeterminableGame,
+        HeadGettableGame, HealthGettableGame, LengthGettableGame, Move, NeighborDeterminableGame,
+        ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
     },
 };
 
@@ -87,7 +86,9 @@ impl MinimaxAgent {
             for moves in combinations {
                 let moves_for_sim: Vec<_> = moves.iter().map(|(sid, mv)| (*sid, [*mv])).collect();
 
-                if let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next() {
+                if let Some((_, next_board)) =
+                    board.simulate_with_moves(&Instr, &moves_for_sim).next()
+                {
                     let eval = self.minimax(&next_board, you, depth - 1, alpha, beta, false);
                     max_eval = max_eval.max(eval);
                     alpha = alpha.max(eval);
@@ -102,7 +103,9 @@ impl MinimaxAgent {
             for moves in combinations {
                 let moves_for_sim: Vec<_> = moves.iter().map(|(sid, mv)| (*sid, [*mv])).collect();
 
-                if let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next() {
+                if let Some((_, next_board)) =
+                    board.simulate_with_moves(&Instr, &moves_for_sim).next()
+                {
                     let eval = self.minimax(&next_board, you, depth - 1, alpha, beta, true);
                     min_eval = min_eval.min(eval);
                     beta = beta.min(eval);
@@ -115,7 +118,9 @@ impl MinimaxAgent {
         }
     }
 
-    fn generate_move_combinations(snake_moves: &[(SnakeId, Vec<Move>)]) -> Vec<Vec<(SnakeId, Move)>> {
+    fn generate_move_combinations(
+        snake_moves: &[(SnakeId, Vec<Move>)],
+    ) -> Vec<Vec<(SnakeId, Move)>> {
         if snake_moves.is_empty() {
             return vec![vec![]];
         }
@@ -176,8 +181,10 @@ impl Agent for MinimaxAgent {
                 })
                 .collect();
 
-            if let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next() {
-                let score = self.minimax(&next_board, you, self.depth - 1, i32::MIN, i32::MAX, false);
+            if let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next()
+            {
+                let score =
+                    self.minimax(&next_board, you, self.depth - 1, i32::MIN, i32::MAX, false);
                 if score > best_score {
                     best_score = score;
                     best_move = mv;

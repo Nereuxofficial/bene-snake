@@ -173,7 +173,7 @@ impl Node {
             .simulate_with_moves(&Instr, &moves_for_simulation)
             .next()
         {
-            let node = Self::new_child(Arc::downgrade(&self), next_board);
+            let node = Self::new_child(Arc::downgrade(self), next_board);
             let mut next_nodes_lock = self.next_nodes.lock().unwrap();
             let node = Arc::new(node);
             next_nodes_lock.insert(action, Arc::clone(&node));

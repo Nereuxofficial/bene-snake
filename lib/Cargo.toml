@@ -6,18 +6,10 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-color-eyre = { workspace = true }
 tracing = { workspace = true }
-dotenvy = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-axum = { workspace = true, features = ["macros"] }
 battlesnake-game-types = { workspace = true }
 serde = { workspace = true }
-simd-json = { workspace = true }
 serde_json = { workspace = true }
-divan = { workspace = true }
-minimax = { workspace = true }
-rayon = { workspace = true }
 rand = { workspace = true, features = ["simd_support"] }
 
 [dev-dependencies]

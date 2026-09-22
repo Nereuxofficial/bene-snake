@@ -13,7 +13,7 @@ fn bench_rollout_start_of_game(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
     let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_start_of_game", |b| {
@@ -30,7 +30,7 @@ fn bench_rollout_late_stage(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
     let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_late_stage", |b| {
@@ -47,7 +47,7 @@ fn bench_rollout_cornered(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
     let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_cornered", |b| {
@@ -64,7 +64,7 @@ fn bench_rollout_4_snakes(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
     let node = Arc::new(Node::new_root(compact));
 
     c.bench_function("rollout_4_snakes", |b| {
@@ -81,7 +81,7 @@ fn bench_rollout_multiple_runs(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
 
     let mut group = c.benchmark_group("rollout_multiple_runs");
 
@@ -135,7 +135,7 @@ fn bench_rollout_scenarios(c: &mut Criterion) {
             let snake_id_mapping = build_snake_id_map(&g);
             if let Ok(compact) = g.as_cell_board(&snake_id_mapping) {
                 let compact: CellBoard4Snakes11x11 = compact;
-                let you = compact.you_id().clone();
+                let you = *compact.you_id();
                 let node = Arc::new(Node::new_root(compact));
 
                 group.bench_with_input(BenchmarkId::from_parameter(name), &node, |b, node| {
@@ -156,7 +156,7 @@ fn bench_mcts_search_limited(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
+    let you = *compact.you_id();
 
     let mut group = c.benchmark_group("mcts_search_limited");
     group.sample_size(10); // Reduce sample size for longer-running benchmarks
@@ -183,11 +183,10 @@ fn bench_node_creation(c: &mut Criterion) {
     let g = g.expect("the json literal is valid");
     let snake_id_mapping = build_snake_id_map(&g);
     let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let you = compact.you_id().clone();
 
     c.bench_function("node_creation", |b| {
         b.iter(|| {
-            black_box(Node::new_root(black_box(compact.clone())));
+            black_box(Node::new_root(black_box(compact)));
         })
     });
 }
