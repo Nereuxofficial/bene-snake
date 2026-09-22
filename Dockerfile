@@ -7,7 +7,7 @@ FROM rustlang/rust:nightly AS builder
 ARG TARGETPLATFORM
 ARG TARGETARCH
 
-RUN apt update && apt install -y protobuf-compiler musl-tools
+RUN apt update && apt install -y ca-certificates protobuf-compiler musl-tools
 RUN update-ca-certificates
 
 # Create appuser
@@ -42,11 +42,19 @@ RUN case "$TARGETARCH" in \
 ####################################################################################################
 ## Final image
 ####################################################################################################
-FROM scratch
+FROM debian:bookworm-slim
+
+# Install the system trust store in the runtime image. The builder's CA files
+# are not a reliable substitute for a runtime-managed trust store in scratch.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Import from builder.
 COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /etc/group /etc/group
+
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 WORKDIR /bene-snake
 
