@@ -3,8 +3,8 @@ use battlesnake_game_types::types::{YouDeterminableGame, build_snake_id_map};
 use battlesnake_game_types::wire_representation::Game as DEGame;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lib::mcts::Node;
+use std::hint::black_box;
 use std::sync::Arc;
-use stdd::hint::black_box;
 
 /// Benchmark the rollout function with different game states
 fn bench_rollout_start_of_game(c: &mut Criterion) {
