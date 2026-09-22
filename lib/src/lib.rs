@@ -1,4 +1,3 @@
-#![feature(float_algebraic)]
 #![feature(iter_collect_into)]
 
 pub mod agent;

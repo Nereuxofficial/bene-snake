@@ -6,6 +6,8 @@ use std::{
     },
 };
 
+use crate::eval::evaluate_board;
+use crate::non_pushable_queue::NonPushableQueue;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
@@ -13,33 +15,6 @@ use battlesnake_game_types::{
         SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
     },
 };
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-
-use crate::eval::evaluate_board;
-use crate::non_pushable_queue::NonPushableQueue;
-use ahash::AHasher;
-use std::hash::{Hash, Hasher};
-
-/// Global evaluation cache shared across all MCTS nodes
-/// Uses DashMap for lock-free concurrent access
-static EVAL_CACHE: Lazy<DashMap<u64, u16>> = Lazy::new(|| DashMap::with_capacity(100_000));
-
-/// Fast hash function for board state to enable caching
-/// Uses a stable hash based on board memory representation
-#[inline]
-fn hash_board(board: &CellBoard4Snakes11x11) -> u64 {
-    let mut hasher = AHasher::default();
-    // Hash the raw bytes of the board structure for fast, stable hashing
-    // This is safe because we're just reading the bytes
-    let ptr = board as *const CellBoard4Snakes11x11 as *const u8;
-    let size = std::mem::size_of::<CellBoard4Snakes11x11>();
-    unsafe {
-        let slice = std::slice::from_raw_parts(ptr, size);
-        slice.hash(&mut hasher);
-    }
-    hasher.finish()
-}
 
 /// Iterator that generates all possible combinations of moves for each snake (Cartesian product)
 struct MoveCombinationIterator {
@@ -119,7 +94,6 @@ pub struct Node {
     possible_moves: NonPushableQueue<Vec<(SnakeId, Move)>>,
     wins: AtomicU32,
     visits: AtomicU32,
-    board_hash: u64, // Cache the board hash for quick lookups
 }
 #[derive(Debug)]
 struct Instr;
@@ -133,8 +107,6 @@ impl Node {
     pub fn new_child(parent: Weak<Node>, board: CellBoard4Snakes11x11) -> Self {
         let snake_moves: Vec<_> = board.reasonable_moves_for_each_snake().collect();
         let move_combinations = generate_move_combinations(snake_moves);
-        let board_hash = hash_board(&board);
-
         Node {
             parent_node: parent,
             board,
@@ -142,7 +114,6 @@ impl Node {
             possible_moves: NonPushableQueue::new_from_iterator(move_combinations.into_iter()),
             wins: AtomicU32::new(0),
             visits: AtomicU32::new(0),
-            board_hash,
         }
     }
     pub fn get_depth(&self) -> u32 {
@@ -155,25 +126,18 @@ impl Node {
             .unwrap_or(0)
     }
     pub fn best_child(&self, c: f32) -> Option<(Action<4>, Arc<Node>)> {
-        // Cache parent visits to avoid repeated atomic loads during iteration
         let parent_visits = self.visits.load(Ordering::Relaxed) as f32;
-
-        // Collect entries quickly to minimize lock duration
-        let children: Vec<_> = {
-            let lock = self.next_nodes.lock().unwrap();
-            lock.iter()
-                .map(|(action, node)| (*action, node.clone()))
-                .collect()
-        };
-
-        // Compute UCB1 scores without holding the lock
-        children.into_iter().max_by(|(_, node1), (_, node2)| {
-            Self::ucb1_from_ref(node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
-                node2,
-                c,
-                parent_visits,
-            ))
-        })
+        let children = self.next_nodes.lock().unwrap();
+        children
+            .iter()
+            .max_by(|(_, node1), (_, node2)| {
+                Self::ucb1_from_ref(*node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
+                    *node2,
+                    c,
+                    parent_visits,
+                ))
+            })
+            .map(|(action, node)| (*action, Arc::clone(node)))
     }
     pub fn is_fully_expanded(&self) -> bool {
         self.possible_moves.is_empty()
@@ -197,10 +161,9 @@ impl Node {
 
         num_children < max_children
     }
-    pub fn expand(self: Arc<Self>, _you: &SnakeId) -> bool {
-        let Some(moves) = self.possible_moves.pop_front() else {
-            return false;
-        };
+
+    fn expand_child(self: &Arc<Self>) -> Option<(Action<4>, Arc<Node>)> {
+        let moves = self.possible_moves.pop_front()?;
 
         // Convert moves in-place to avoid intermediate allocation
         let moves_for_simulation: Vec<_> = moves.into_iter().map(|(sid, mv)| (sid, [mv])).collect();
@@ -212,10 +175,15 @@ impl Node {
         {
             let node = Self::new_child(Arc::downgrade(&self), next_board);
             let mut next_nodes_lock = self.next_nodes.lock().unwrap();
-            next_nodes_lock.insert(action, Arc::new(node));
-            return true;
+            let node = Arc::new(node);
+            next_nodes_lock.insert(action, Arc::clone(&node));
+            return Some((action, node));
         }
-        false
+        None
+    }
+
+    pub fn expand(self: Arc<Self>, _you: &SnakeId) -> bool {
+        self.expand_child().is_some()
     }
 
     pub fn ucb1(self: Arc<Self>, c: f32, visits_to_parent: f32) -> f32 {
@@ -236,24 +204,6 @@ impl Node {
             c.algebraic_mul(visits_to_parent.ln().sqrt().algebraic_div(visits as f32)),
         )
     }
-    /// Get cached evaluation score for this node's board state
-    /// Returns cached value if available, otherwise computes and caches it
-    #[inline]
-    fn get_cached_eval(&self, you: &SnakeId) -> u16 {
-        // Try to get from cache first
-        if let Some(score) = EVAL_CACHE.get(&self.board_hash) {
-            return *score;
-        }
-
-        // Compute evaluation
-        let score = evaluate_board(&self.board, you);
-
-        // Cache it for future use
-        EVAL_CACHE.insert(self.board_hash, score);
-
-        score
-    }
-
     /// Perform a random rollout with depth limit and evaluation-based scoring
     /// Returns a score normalized to 0-1000 range for better granularity
     pub fn rollout(self: Arc<Self>, you: &SnakeId) -> u32 {
@@ -332,13 +282,11 @@ pub fn mcts_search(root_node: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
         }
 
         // Expansion: add a new child if possible (progressive widening)
-        if !node.is_terminal() && node.should_expand_more() {
-            if node.clone().expand(you) {
-                // If we successfully expanded, select the newly added child for rollout
-                if let Some((_, child)) = node.best_child(EXPLORATION_CONSTANT) {
-                    node = child;
-                }
-            }
+        if !node.is_terminal()
+            && node.should_expand_more()
+            && let Some((_, child)) = node.expand_child()
+        {
+            node = child;
         }
 
         // Simulation: rollout from current node

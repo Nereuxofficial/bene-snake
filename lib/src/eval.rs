@@ -1,4 +1,3 @@
-use ahash::AHasher;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
@@ -8,18 +7,6 @@ use battlesnake_game_types::{
     wire_representation::Position,
 };
 use std::collections::{HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
-
-/// Fast hash function for board state to enable caching
-/// We hash the raw board data for quick lookups
-#[inline]
-fn hash_board(board: &CellBoard4Snakes11x11) -> u64 {
-    let mut hasher = AHasher::default();
-    // Hash the board's internal representation
-    // This is a cheap operation compared to evaluation
-    std::ptr::addr_of!(*board).hash(&mut hasher);
-    hasher.finish()
-}
 
 /// Manhattan distance between two positions
 fn manhattan_distance(a: &Position, b: &Position) -> i32 {
