@@ -170,6 +170,8 @@ pub struct Game {
     pub board: Board,
     pub turn: i32,
     pub game: NestedGame,
+    #[serde(default)]
+    pub latency: u64,
 }
 
 impl Game {

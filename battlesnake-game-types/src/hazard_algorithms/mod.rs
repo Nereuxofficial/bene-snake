@@ -343,7 +343,7 @@ mod tests {
             } else {
                 let new_hazards = hazard_alg.inc_turn();
                 maintained_hazards.extend(new_hazards);
-                let hazards_set = HashSet::from_iter(game.board.hazards.into_iter());
+                let hazards_set = HashSet::from_iter(game.board.hazards);
                 assert!(hazard_alg.current_turn == game.turn as u16);
                 assert!(hazards_set == maintained_hazards);
             }

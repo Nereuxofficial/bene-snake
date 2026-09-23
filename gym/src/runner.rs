@@ -131,6 +131,7 @@ pub fn generate_random_game(config: &GameConfig) -> Game {
         you: snakes[0].clone(),
         board,
         turn: 0,
+        latency: 0,
         game: NestedGame {
             id: "gym-game".to_string(),
             ruleset: Ruleset {

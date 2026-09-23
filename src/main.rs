@@ -16,22 +16,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::nonpoison::Mutex;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{error, info};
 
 pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock::new();
 static LAST_GAME_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
 const DEPLOY_QUIET_PERIOD: Duration = Duration::from_secs(60);
-pub const PING: u64 = 60;
-pub const TIME_TO_MOVE: u64 = 500 - 2 * PING;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
+pub fn decode_state(text: String) -> color_eyre::Result<(CellBoard4Snakes11x11, u64)> {
     record_game_request();
     let game: Game = serde_json::from_str(&text)?;
     let binding = GAME_STATES.get().unwrap().lock();
     let snake_id_map = binding.get(&game.game.id).unwrap();
-    Ok(game.as_cell_board(snake_id_map).unwrap())
+    Ok((game.as_cell_board(snake_id_map).unwrap(), game.latency))
 }
 
 fn record_game_request() {
@@ -59,21 +57,23 @@ async fn deploy_ready() -> axum::http::StatusCode {
 async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
-    let board = decode_state(body).unwrap();
+    let (board, latency) = decode_state(body).unwrap();
     let you = *board.you_id();
     let root_node = Arc::new(Node::new_root(board));
     let root_node_clone = root_node.clone();
     let stop_bool = Arc::new(AtomicBool::new(false));
     let stop_bool_ref = stop_bool.clone();
-    let _task = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         mcts_search(root_node_clone, &you, stop_bool_ref);
     });
-    tokio::time::sleep(Duration::from_millis(TIME_TO_MOVE)).await;
+    tokio::time::sleep(Duration::from_millis(latency)).await;
     stop_bool.store(true, Ordering::Relaxed);
+    let mut failed = false;
     let chosen_move = root_node
         .best_child(0.0)
         .map(|c| c.0.own_move())
         .unwrap_or_else(|| {
+            failed = true;
             info!("Could not get move in game!");
             Move::Down
         });
@@ -82,8 +82,10 @@ async fn get_move(body: String) -> Json<Value> {
         start.elapsed(),
         root_node.get_depth()
     );
-    let lowercase_move = chosen_move.to_string().to_lowercase();
-    Json(json!({"move": lowercase_move}))
+    if let Err(e) = task.await && failed {
+        error!("MCTS Search failed with: {e}");
+    }
+    Json(json!({"move": chosen_move}))
 }
 
 async fn info() -> Json<Value> {

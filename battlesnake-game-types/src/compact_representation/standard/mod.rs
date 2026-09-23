@@ -355,7 +355,7 @@ mod test {
         eprintln!("{}", compact);
         for mv in moves {
             let res = compact
-                .simulate_with_moves(&instruments, &vec![(SnakeId(0), [mv].as_slice())])
+                .simulate_with_moves(&instruments, &[(SnakeId(0), [mv].as_slice())])
                 .collect_vec();
             compact = res[0].1;
             eprintln!("{}", compact);
