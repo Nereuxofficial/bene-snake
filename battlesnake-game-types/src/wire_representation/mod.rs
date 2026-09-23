@@ -2,9 +2,9 @@
 //! types to match the battlesnake wire representation
 
 use crate::compact_representation;
-use crate::compact_representation::dimensions::Dimensions;
 use crate::compact_representation::CellNum;
 use crate::compact_representation::StandardCellBoard;
+use crate::compact_representation::dimensions::Dimensions;
 use crate::types::*;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
@@ -163,6 +163,10 @@ pub struct RoyaleSettings {
 /// # let body = b"{\"game\":{\"id\":\"4e7c8fe2-a462-4015-95af-5eab3487d5ab\",\"ruleset\":{\"name\":\"royale\",\"version\":\"v1.0.17\"},\"timeout\":500},\"turn\":60,\"board\":{\"height\":11,\"width\":11,\"snakes\":[{\"id\":\"gs_PpJMhVwVvgb4wqHdpGdTVrqB\",\"name\":\"Untimely Neglected Wearable\",\"latency\":\"78\",\"health\":100,\"body\":[{\"x\":2,\"y\":0},{\"x\":2,\"y\":1},{\"x\":2,\"y\":2},{\"x\":2,\"y\":3},{\"x\":2,\"y\":4},{\"x\":2,\"y\":5},{\"x\":2,\"y\":5}],\"head\":{\"x\":2,\"y\":0},\"length\":7,\"shout\":\"\"},{\"id\":\"gs_gbBpgGW7cRFJ3PMpBmJ3RtSF\",\"name\":\"Pretzel\",\"latency\":\"101\",\"health\":78,\"body\":[{\"x\":3,\"y\":7},{\"x\":3,\"y\":8},{\"x\":4,\"y\":8},{\"x\":5,\"y\":8},{\"x\":6,\"y\":8},{\"x\":7,\"y\":8},{\"x\":7,\"y\":7}],\"head\":{\"x\":3,\"y\":7},\"length\":7,\"shout\":\"\"},{\"id\":\"gs_H3PCGx3GqkpSBfv9vfxTdMBF\",\"name\":\"Secret Snake\",\"latency\":\"22\",\"health\":65,\"body\":[{\"x\":1,\"y\":9},{\"x\":2,\"y\":9},{\"x\":3,\"y\":9},{\"x\":3,\"y\":10},{\"x\":2,\"y\":10}],\"head\":{\"x\":1,\"y\":9},\"length\":5,\"shout\":\"\"},{\"id\":\"gs_MMxyjByhGFbtGSV8KJv3tqdV\",\"name\":\"does this work lol\",\"latency\":\"100\",\"health\":86,\"body\":[{\"x\":10,\"y\":4},{\"x\":10,\"y\":5},{\"x\":9,\"y\":5},{\"x\":8,\"y\":5},{\"x\":7,\"y\":5},{\"x\":6,\"y\":5},{\"x\":5,\"y\":5},{\"x\":4,\"y\":5},{\"x\":4,\"y\":4},{\"x\":5,\"y\":4}],\"head\":{\"x\":10,\"y\":4},\"length\":10,\"shout\":\"\"}],\"food\":[{\"x\":10,\"y\":3}],\"hazards\":[{\"x\":0,\"y\":0},{\"x\":0,\"y\":1},{\"x\":0,\"y\":2},{\"x\":0,\"y\":3},{\"x\":0,\"y\":4},{\"x\":0,\"y\":5},{\"x\":0,\"y\":6},{\"x\":0,\"y\":7},{\"x\":0,\"y\":8},{\"x\":0,\"y\":9},{\"x\":0,\"y\":10},{\"x\":1,\"y\":0},{\"x\":1,\"y\":1},{\"x\":1,\"y\":2},{\"x\":1,\"y\":3},{\"x\":1,\"y\":4},{\"x\":1,\"y\":5},{\"x\":1,\"y\":6},{\"x\":1,\"y\":7},{\"x\":1,\"y\":8},{\"x\":1,\"y\":9},{\"x\":1,\"y\":10},{\"x\":2,\"y\":0},{\"x\":2,\"y\":1},{\"x\":2,\"y\":2},{\"x\":2,\"y\":3},{\"x\":2,\"y\":4},{\"x\":2,\"y\":5},{\"x\":2,\"y\":6},{\"x\":2,\"y\":7},{\"x\":2,\"y\":8},{\"x\":2,\"y\":9},{\"x\":2,\"y\":10}]},\"you\":{\"id\":\"gs_MMxyjByhGFbtGSV8KJv3tqdV\",\"name\":\"does this work lol\",\"latency\":\"100\",\"health\":86,\"body\":[{\"x\":10,\"y\":4},{\"x\":10,\"y\":5},{\"x\":9,\"y\":5},{\"x\":8,\"y\":5},{\"x\":7,\"y\":5},{\"x\":6,\"y\":5},{\"x\":5,\"y\":5},{\"x\":4,\"y\":5},{\"x\":4,\"y\":4},{\"x\":5,\"y\":4}],\"head\":{\"x\":10,\"y\":4},\"length\":10,\"shout\":\"\"}}";
 /// let g: Result<Game, _> = serde_json::from_slice(body);
 /// ```
+fn default_timeout() -> u64 {
+    500
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Game {
     pub you: BattleSnake,
@@ -172,6 +176,8 @@ pub struct Game {
     pub game: NestedGame,
     #[serde(default)]
     pub latency: u64,
+    #[serde(default = "default_timeout")]
+    pub timeout: u64,
 }
 
 impl Game {

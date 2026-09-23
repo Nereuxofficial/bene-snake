@@ -6,11 +6,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
 use battlesnake_game_types::types::{
-    build_snake_id_map, Move, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame,
+    Move, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame, build_snake_id_map,
 };
 use battlesnake_game_types::wire_representation::Game;
-use lib::mcts::{mcts_search, Node};
-use serde_json::{json, Value};
+use lib::mcts::{Node, mcts_search};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::nonpoison::Mutex;
@@ -29,7 +29,10 @@ pub fn decode_state(text: String) -> color_eyre::Result<(CellBoard4Snakes11x11, 
     let game: Game = serde_json::from_str(&text)?;
     let binding = GAME_STATES.get().unwrap().lock();
     let snake_id_map = binding.get(&game.game.id).unwrap();
-    Ok((game.as_cell_board(snake_id_map).unwrap(), game.latency))
+    Ok((
+        game.as_cell_board(snake_id_map).unwrap(),
+        game.timeout - game.latency,
+    ))
 }
 
 fn record_game_request() {
@@ -57,7 +60,7 @@ async fn deploy_ready() -> axum::http::StatusCode {
 async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
-    let (board, latency) = decode_state(body).unwrap();
+    let (board, move_duration) = decode_state(body).unwrap();
     let you = *board.you_id();
     let root_node = Arc::new(Node::new_root(board));
     let root_node_clone = root_node.clone();
@@ -66,7 +69,7 @@ async fn get_move(body: String) -> Json<Value> {
     let task = tokio::task::spawn_blocking(move || {
         mcts_search(root_node_clone, &you, stop_bool_ref);
     });
-    tokio::time::sleep(Duration::from_millis(latency)).await;
+    tokio::time::sleep(Duration::from_millis(move_duration)).await;
     stop_bool.store(true, Ordering::Relaxed);
     let mut failed = false;
     let chosen_move = root_node
@@ -82,7 +85,9 @@ async fn get_move(body: String) -> Json<Value> {
         start.elapsed(),
         root_node.get_depth()
     );
-    if let Err(e) = task.await && failed {
+    if let Err(e) = task.await
+        && failed
+    {
         error!("MCTS Search failed with: {e}");
     }
     Json(json!({"move": chosen_move}))

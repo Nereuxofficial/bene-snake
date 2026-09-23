@@ -132,6 +132,7 @@ pub fn generate_random_game(config: &GameConfig) -> Game {
         board,
         turn: 0,
         latency: 0,
+        timeout: 500,
         game: NestedGame {
             id: "gym-game".to_string(),
             ruleset: Ruleset {
