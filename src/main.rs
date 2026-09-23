@@ -1,3 +1,6 @@
+#![feature(nonpoison_mutex)]
+#![feature(sync_nonpoison)]
+
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -10,7 +13,8 @@ use lib::mcts::{mcts_search, Node};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::nonpoison::Mutex;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::info;
 
@@ -25,7 +29,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
     record_game_request();
     let game: Game = serde_json::from_str(&text)?;
-    let binding = GAME_STATES.get().unwrap().lock().unwrap();
+    let binding = GAME_STATES.get().unwrap().lock();
     let snake_id_map = binding.get(&game.game.id).unwrap();
     Ok(game.as_cell_board(snake_id_map).unwrap())
 }
@@ -33,20 +37,17 @@ pub fn decode_state(text: String) -> color_eyre::Result<CellBoard4Snakes11x11> {
 fn record_game_request() {
     *LAST_GAME_REQUEST
         .get_or_init(|| Mutex::new(Instant::now()))
-        .lock()
-        .unwrap() = Instant::now();
+        .lock() = Instant::now();
 }
 
 async fn deploy_ready() -> axum::http::StatusCode {
     let active_games = GAME_STATES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
-        .unwrap()
         .len();
     let quiet_for = LAST_GAME_REQUEST
         .get_or_init(|| Mutex::new(Instant::now()))
         .lock()
-        .unwrap()
         .elapsed();
     if active_games == 0 && quiet_for >= DEPLOY_QUIET_PERIOD {
         axum::http::StatusCode::NO_CONTENT
@@ -107,7 +108,6 @@ async fn end(body: String) -> Response {
     GAME_STATES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
-        .unwrap()
         .remove(&game_state.game.id);
 
     Response::default()
@@ -125,7 +125,6 @@ async fn start(body: String) -> Response {
     GAME_STATES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
-        .unwrap()
         .insert(game_state.game.id.clone(), snake_id_map);
     Response::default()
 }
