@@ -39,7 +39,7 @@ impl MoveCombinationIterator {
 }
 
 impl Iterator for MoveCombinationIterator {
-    type Item = Vec<(SnakeId, Move)>;
+    type Item = ArrayVec<(SnakeId, Move), 4>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted {
@@ -49,11 +49,11 @@ impl Iterator for MoveCombinationIterator {
         // Handle empty snake_moves case: yield one empty combination
         if self.snake_moves.is_empty() {
             self.exhausted = true;
-            return Some(vec![]);
+            return Some(ArrayVec::new());
         }
 
         // Build current combination
-        let combination: Vec<(SnakeId, Move)> = self
+        let combination: ArrayVec<(SnakeId, Move), 4> = self
             .snake_moves
             .iter()
             .zip(&self.indices)
@@ -85,7 +85,7 @@ impl Iterator for MoveCombinationIterator {
 /// Generate an iterator over all possible combinations of moves for each snake (Cartesian product)
 fn generate_move_combinations(
     snake_moves: ArrayVec<(SnakeId, MoveArray), 4>,
-) -> impl Iterator<Item = Vec<(SnakeId, Move)>> {
+) -> impl Iterator<Item = ArrayVec<(SnakeId, Move), 4>> {
     MoveCombinationIterator::new(snake_moves)
 }
 
@@ -93,7 +93,7 @@ pub struct Node {
     parent_node: Weak<Node>,
     board: CellBoard4Snakes11x11,
     next_nodes: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
-    possible_moves: NonPushableQueue<Vec<(SnakeId, Move)>>,
+    possible_moves: NonPushableQueue<ArrayVec<(SnakeId, Move), 4>>,
     wins: AtomicU32,
     visits: AtomicU32,
 }
@@ -167,8 +167,8 @@ impl Node {
     fn expand_child(self: &Arc<Self>) -> Option<(Action<4>, Arc<Node>)> {
         let moves = self.possible_moves.pop_front()?;
 
-        // Convert moves in-place to avoid intermediate allocation
-        let moves_for_simulation: Vec<_> = moves.into_iter().map(|(sid, mv)| (sid, [mv])).collect();
+        let moves_for_simulation: ArrayVec<_, 4> =
+            moves.into_iter().map(|(sid, mv)| (sid, [mv])).collect();
 
         if let Some((action, next_board)) = self
             .board
@@ -393,16 +393,16 @@ mod tests {
         let empty_iter = MoveCombinationIterator::new(vec![]);
         let empty_result: Vec<_> = empty_iter.collect();
         assert_eq!(empty_result.len(), 1);
-        assert_eq!(empty_result[0], vec![]);
+        assert!(empty_result[0].is_empty());
 
         // Test single snake with multiple moves
         let snake1 = SnakeId(0);
         let single_snake = vec![(snake1, [Move::Up, Move::Down, Move::Left].into())];
         let single_result: Vec<_> = MoveCombinationIterator::new(single_snake).collect();
         assert_eq!(single_result.len(), 3);
-        assert_eq!(single_result[0], vec![(snake1, Move::Up)]);
-        assert_eq!(single_result[1], vec![(snake1, Move::Down)]);
-        assert_eq!(single_result[2], vec![(snake1, Move::Left)]);
+        assert_eq!(single_result[0].as_slice(), &[(snake1, Move::Up)]);
+        assert_eq!(single_result[1].as_slice(), &[(snake1, Move::Down)]);
+        assert_eq!(single_result[2].as_slice(), &[(snake1, Move::Left)]);
 
         // Test two snakes (Cartesian product)
         let snake2 = SnakeId(1);
@@ -413,20 +413,20 @@ mod tests {
         let two_result: Vec<_> = MoveCombinationIterator::new(two_snakes).collect();
         assert_eq!(two_result.len(), 4); // 2 x 2 = 4
         assert_eq!(
-            two_result[0],
-            vec![(snake1, Move::Up), (snake2, Move::Left)]
+            two_result[0].as_slice(),
+            &[(snake1, Move::Up), (snake2, Move::Left)]
         );
         assert_eq!(
-            two_result[1],
-            vec![(snake1, Move::Up), (snake2, Move::Right)]
+            two_result[1].as_slice(),
+            &[(snake1, Move::Up), (snake2, Move::Right)]
         );
         assert_eq!(
-            two_result[2],
-            vec![(snake1, Move::Down), (snake2, Move::Left)]
+            two_result[2].as_slice(),
+            &[(snake1, Move::Down), (snake2, Move::Left)]
         );
         assert_eq!(
-            two_result[3],
-            vec![(snake1, Move::Down), (snake2, Move::Right)]
+            two_result[3].as_slice(),
+            &[(snake1, Move::Down), (snake2, Move::Right)]
         );
 
         // Test three snakes
