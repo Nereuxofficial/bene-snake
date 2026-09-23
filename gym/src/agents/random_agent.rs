@@ -49,6 +49,7 @@ impl Agent for RandomAgent {
         // Fallback: pick any reasonable move
         if let Some(mv) = board
             .reasonable_moves_for_each_snake()
+            .into_iter()
             .find(|(sid, _)| *sid == you)
             .and_then(|(_, moves)| moves.into_iter().next())
         {

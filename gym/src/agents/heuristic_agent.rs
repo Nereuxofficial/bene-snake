@@ -52,6 +52,7 @@ impl HeuristicAgent {
         // Simulate the move to see the resulting board
         let moves_for_sim: Vec<_> = board
             .reasonable_moves_for_each_snake()
+            .into_iter()
             .map(|(sid, moves)| {
                 let chosen = if sid == you {
                     mv
@@ -119,11 +120,12 @@ impl Agent for HeuristicAgent {
     }
 
     fn choose_move(&self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Move {
-        let reasonable_moves: Vec<Move> = board
+        let reasonable_moves = board
             .reasonable_moves_for_each_snake()
+            .into_iter()
             .find(|(sid, _)| *sid == you)
-            .map(|(_, moves)| moves.into_iter().collect())
-            .unwrap_or_else(|| vec![Move::Up, Move::Down, Move::Left, Move::Right]);
+            .map(|(_, moves)| moves)
+            .unwrap_or_else(|| Move::all().into_iter().collect());
 
         // Score each move and pick the best
         reasonable_moves

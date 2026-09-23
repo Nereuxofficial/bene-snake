@@ -6,6 +6,7 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+arrayvec = "0.7.8"
 tracing = { workspace = true }
 battlesnake-game-types = { workspace = true }
 serde = { workspace = true }
@@ -14,6 +15,7 @@ rand = { workspace = true, features = ["simd_support"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
+alloc_tracker = "0.7.10"
 
 [features]
 bench = []
@@ -28,4 +30,8 @@ harness = false
 
 [[bench]]
 name = "mcts_expand"
+harness = false
+
+[[bench]]
+name = "mcts_allocations"
 harness = false

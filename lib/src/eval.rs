@@ -2,52 +2,17 @@ use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
         FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame,
-        NeighborDeterminableGame, PositionGettableGame, SnakeId,
+        NeighborDeterminableGame, SnakeId,
     },
     wire_representation::Position,
 };
-use std::collections::{HashSet, VecDeque};
 
 /// Manhattan distance between two positions
 fn manhattan_distance(a: &Position, b: &Position) -> i32 {
     (a.x - b.x).abs() + (a.y - b.y).abs()
 }
 
-/// Flood fill to count reachable cells from a starting position
-/// This is critical for survival - we need to know how much space we can access
-fn flood_fill(board: &CellBoard4Snakes11x11, start_pos: Position) -> u32 {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    let start_native = board.native_from_position(start_pos);
-    queue.push_back(start_native);
-    visited.insert(start_native);
-
-    let mut count = 0;
-    const MAX_ITERATIONS: u32 = 121; // Max cells on 11x11 board
-
-    while let Some(pos) = queue.pop_front() {
-        count += 1;
-
-        // Safety check to prevent infinite loops
-        if count >= MAX_ITERATIONS {
-            break;
-        }
-
-        // Get all valid neighboring positions
-        for neighbor in board.neighbors(&pos) {
-            if !visited.contains(&neighbor) {
-                visited.insert(neighbor);
-                queue.push_back(neighbor);
-            }
-        }
-    }
-
-    count
-}
-
-/// Lightweight evaluation function optimized for MCTS (called millions of times)
-/// This version avoids expensive operations like flood fill
+/// Lightweight evaluation function optimized for MCTS
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
     // Check if we're dead - return worst score
     if cellboard.get_health(you) == 0 {

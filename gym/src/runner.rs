@@ -3,16 +3,16 @@ use std::collections::VecDeque;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        build_snake_id_map, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
-        SnakeId, VictorDeterminableGame,
+        ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        build_snake_id_map,
     },
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
-use rand::seq::SliceRandom;
 use rand::RngExt;
+use rand::seq::SliceRandom;
 
-use lib::Agent;
 use crate::stats::GameResult;
+use lib::Agent;
 
 #[derive(Debug)]
 struct Instr;
@@ -148,10 +148,7 @@ pub fn generate_random_game(config: &GameConfig) -> Game {
 }
 
 /// Runs a single game with the given agents
-pub fn run_game(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-) -> GameResult {
+pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
     assert!(
         agents.len() >= config.num_snakes,
         "Need at least {} agents for {} snakes",
@@ -177,6 +174,7 @@ pub fn run_game(
                 // Check if snake is still alive (has reasonable moves)
                 let has_moves = board
                     .reasonable_moves_for_each_snake()
+                    .into_iter()
                     .any(|(sid, moves)| sid == snake_id && moves.into_iter().next().is_some());
 
                 if has_moves {
@@ -224,9 +222,7 @@ pub fn run_tournament(
     config: &GameConfig,
     num_games: usize,
 ) -> Vec<GameResult> {
-    (0..num_games)
-        .map(|_| run_game(agents, config))
-        .collect()
+    (0..num_games).map(|_| run_game(agents, config)).collect()
 }
 
 /// Run multiple games in parallel

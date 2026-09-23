@@ -1,8 +1,9 @@
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        HeadGettableGame, HealthGettableGame, LengthGettableGame, Move, NeighborDeterminableGame,
-        ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        HeadGettableGame, HealthGettableGame, LengthGettableGame, Move, MoveArray,
+        NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
+        SnakeId, VictorDeterminableGame,
     },
 };
 
@@ -68,7 +69,7 @@ impl MinimaxAgent {
         }
 
         // Get all possible move combinations
-        let snake_moves: Vec<_> = board.reasonable_moves_for_each_snake().collect();
+        let snake_moves = board.reasonable_moves_for_each_snake();
 
         if snake_moves.is_empty() {
             return self.evaluate(board, you);
@@ -119,7 +120,7 @@ impl MinimaxAgent {
     }
 
     fn generate_move_combinations(
-        snake_moves: &[(SnakeId, Vec<Move>)],
+        snake_moves: &[(SnakeId, MoveArray)],
     ) -> Vec<Vec<(SnakeId, Move)>> {
         if snake_moves.is_empty() {
             return vec![vec![]];
@@ -158,11 +159,12 @@ impl Agent for MinimaxAgent {
     }
 
     fn choose_move(&self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Move {
-        let my_moves: Vec<Move> = board
+        let my_moves: MoveArray = board
             .reasonable_moves_for_each_snake()
+            .into_iter()
             .find(|(sid, _)| *sid == you)
-            .map(|(_, moves)| moves.into_iter().collect())
-            .unwrap_or_else(|| vec![Move::Up, Move::Down, Move::Left, Move::Right]);
+            .map(|(_, moves)| moves)
+            .unwrap_or_else(|| Move::all().into_iter().collect());
 
         let mut best_move = my_moves.first().copied().unwrap_or(Move::Up);
         let mut best_score = i32::MIN;
@@ -171,6 +173,7 @@ impl Agent for MinimaxAgent {
             // Create move combination with our move and assume others pick first valid
             let moves_for_sim: Vec<_> = board
                 .reasonable_moves_for_each_snake()
+                .into_iter()
                 .map(|(sid, moves)| {
                     let chosen = if sid == you {
                         mv

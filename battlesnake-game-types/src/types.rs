@@ -13,6 +13,89 @@ use std::time::Duration;
 /// stored, so that `SnakeIds` are stable throughout the game.
 pub type SnakeIDMap = HashMap<String, SnakeId>;
 
+/// Up to four moves for one snake, stored without a heap allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoveArray {
+    inner: [Move; N_MOVES],
+    len: u8,
+}
+
+impl MoveArray {
+    /// Create an empty move list.
+    pub const fn new() -> Self {
+        Self {
+            inner: [Move::Up; N_MOVES],
+            len: 0,
+        }
+    }
+
+    /// Append a move. A snake cannot have more than four possible moves.
+    pub fn push(&mut self, mv: Move) {
+        assert!((self.len as usize) < N_MOVES, "too many snake moves");
+        self.inner[self.len as usize] = mv;
+        self.len += 1;
+    }
+
+    /// Return only the initialized moves.
+    pub fn as_slice(&self) -> &[Move] {
+        &self.inner[..self.len as usize]
+    }
+}
+
+impl Default for MoveArray {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::ops::Deref for MoveArray {
+    type Target = [Move];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl Borrow<[Move]> for MoveArray {
+    fn borrow(&self) -> &[Move] {
+        self.as_slice()
+    }
+}
+
+impl FromIterator<Move> for MoveArray {
+    fn from_iter<T: IntoIterator<Item = Move>>(iter: T) -> Self {
+        let mut moves = Self::new();
+        for mv in iter {
+            moves.push(mv);
+        }
+        moves
+    }
+}
+
+impl<const N: usize> From<[Move; N]> for MoveArray {
+    fn from(moves: [Move; N]) -> Self {
+        moves.into_iter().collect()
+    }
+}
+
+impl IntoIterator for MoveArray {
+    type Item = Move;
+    type IntoIter = std::iter::Take<std::array::IntoIter<Move, N_MOVES>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter().take(self.len as usize)
+    }
+}
+
+impl<'a> IntoIterator for &'a MoveArray {
+    type Item = &'a Move;
+    type IntoIter = std::slice::Iter<'a, Move>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
 /// A vector with which to do positional math
 #[derive(Debug, Clone, Copy)]
 pub struct Vector {
@@ -71,7 +154,7 @@ impl Move {
         }
     }
 
-    /// returns a vec of all possible moves
+    /// returns an array of all possible moves
     pub const fn all() -> [Self; N_MOVES] {
         [Move::Up, Move::Down, Move::Left, Move::Right]
     }
@@ -400,10 +483,11 @@ pub trait RandomReasonableMovesGame: SnakeIDGettableGame {
 
 /// a game for which reasonable moves for a given snake can be determined. e.g. do not collide with yourself
 pub trait ReasonableMovesGame: SnakeIDGettableGame {
+    /// Inline collection of moves for all living snakes.
+    type SnakeMoves: IntoIterator<Item = (Self::SnakeIDType, MoveArray)>;
+
     #[allow(missing_docs)]
-    fn reasonable_moves_for_each_snake(
-        &self,
-    ) -> impl Iterator<Item = (Self::SnakeIDType, Vec<Move>)> + '_;
+    fn reasonable_moves_for_each_snake(&self) -> Self::SnakeMoves;
 }
 
 /// a game for which the neighbors of a given Position can be determined

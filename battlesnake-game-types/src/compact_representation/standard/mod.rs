@@ -6,7 +6,7 @@ use crate::types::*;
 /// cast from a json represention to a `CellBoard`
 use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
-use itertools::Itertools;
+use arrayvec::ArrayVec;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 use std::borrow::Borrow;
@@ -85,6 +85,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         rng: &'a mut impl Rng,
     ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
         self.reasonable_moves_for_each_snake()
+            .into_iter()
             .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap()))
     }
 }
@@ -92,9 +93,9 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> ReasonableMovesGame
     for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
-    fn reasonable_moves_for_each_snake(
-        &self,
-    ) -> impl std::iter::Iterator<Item = (SnakeId, Vec<Move>)> {
+    type SnakeMoves = ArrayVec<(SnakeId, MoveArray), MAX_SNAKES>;
+
+    fn reasonable_moves_for_each_snake(&self) -> Self::SnakeMoves {
         let width = self.embedded.get_actual_width();
         self.embedded
             .iter_healths()
@@ -103,7 +104,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
             .map(move |(idx, _)| {
                 let head_pos = self.get_head_as_position(&SnakeId(idx as u8));
 
-                let mvs = IntoIterator::into_iter(Move::all())
+                let mut mvs: MoveArray = IntoIterator::into_iter(Move::all())
                     .filter(|mv| {
                         let new_head = head_pos.add_vec(mv.to_vector());
                         let ci = CellIndex::new(new_head, width);
@@ -113,11 +114,14 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
                                 || self.embedded.cell_is_single_tail(ci))
                             && !self.embedded.cell_is_snake_head(ci)
                     })
-                    .collect_vec();
-                let mvs = if mvs.is_empty() { vec![Move::Up] } else { mvs };
+                    .collect();
+                if mvs.is_empty() {
+                    mvs.push(Move::Up);
+                }
 
                 (SnakeId(idx as u8), mvs)
             })
+            .collect()
     }
 }
 
@@ -509,9 +513,10 @@ mod test {
         let head = compact.get_head_as_native_position(&SnakeId(0));
         assert_eq!(head, CellIndex(0));
 
-        let mut reasonable_moves = compact.reasonable_moves_for_each_snake();
-        let reasonable_moves_for_me = reasonable_moves.next().unwrap().1;
+        let reasonable_moves = compact.reasonable_moves_for_each_snake();
+        assert_eq!(reasonable_moves.capacity(), 4);
+        let reasonable_moves_for_me = reasonable_moves[0].1;
 
-        assert_eq!(reasonable_moves_for_me, vec![Move::Up]);
+        assert_eq!(reasonable_moves_for_me.as_slice(), &[Move::Up]);
     }
 }

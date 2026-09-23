@@ -21,6 +21,19 @@ docker-build TAG="latest":
         -t bene-snake:{{TAG}} \
         .
 
+# Run the Snake Gym CLI (for example: just gym tournament --games 100)
+gym *ARGS:
+    cargo run --release --package gym -- {{ARGS}}
+
+# Run the focused timing suite (optional arguments go to Criterion)
+bench *ARGS:
+    cargo bench --package lib --bench mcts_rollout --bench mcts_expand --bench mcts_best_child -- {{ARGS}}
+    cargo bench --package battlesnake-game-types --bench start_of_game_compact -- {{ARGS}}
+
+# Count allocations and bytes per operation separately from timing benchmarks
+bench-alloc *ARGS:
+    cargo bench --package lib --bench mcts_allocations -- {{ARGS}}
+
 # Profile a benchmark with samply
 profile-bench PACKAGE BENCH PROFILE_TIME="60":
     #!/bin/bash

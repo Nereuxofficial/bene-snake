@@ -2,10 +2,11 @@ use battlesnake_game_types::types::SimulatorInstruments;
 use battlesnake_game_types::wire_representation::Game as DEGame;
 use battlesnake_game_types::{
     compact_representation::StandardCellBoard4Snakes11x11,
-    types::{build_snake_id_map, Move, SimulableGame, SnakeIDGettableGame, SnakeId},
+    types::{Move, SimulableGame, SnakeIDGettableGame, SnakeId, build_snake_id_map},
 };
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+use std::time::Duration;
 
 #[derive(Debug)]
 struct Instruments {}
@@ -57,22 +58,11 @@ fn bench_compact_repr_start_of_game_full(c: &mut Criterion) {
     });
 }
 
-fn late_stage_compact_repr(c: &mut Criterion) {
-    let game_fixture = include_str!("../fixtures/late_stage.json");
-    let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
-    let g = g.expect("the json literal is valid");
-    let snake_id_mapping = build_snake_id_map(&g);
-    let compact: StandardCellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
-    let instruments = Instruments {};
-    c.bench_function("compact late stage", |b| {
-        b.iter(|| bench_compact_full(black_box(&compact), &instruments))
-    });
+criterion_group! {
+    name = benches;
+    config = Criterion::default()
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(5));
+    targets = bench_compact_repr_start_of_game, bench_compact_repr_start_of_game_full
 }
-
-criterion_group!(
-    benches,
-    bench_compact_repr_start_of_game,
-    bench_compact_repr_start_of_game_full,
-    late_stage_compact_repr,
-);
 criterion_main!(benches);
