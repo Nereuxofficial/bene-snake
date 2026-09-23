@@ -7,8 +7,8 @@ use crate::types::*;
 use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
 use itertools::Itertools;
-use rand::seq::IndexedRandom;
 use rand::Rng;
+use rand::seq::IndexedRandom;
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::Display;
@@ -21,7 +21,7 @@ use crate::{
 
 use super::core::CellBoard as CCB;
 use super::core::CellIndex;
-use super::core::{simulate_with_moves, EvaluateMode};
+use super::core::{EvaluateMode, simulate_with_moves};
 use super::dimensions::{ArcadeMaze, Custom, Dimensions, Fixed, Square};
 
 /// A compact board representation that is significantly faster for simulation than
@@ -83,11 +83,9 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn random_reasonable_move_for_each_snake<'a>(
         &'a self,
         rng: &'a mut impl Rng,
-    ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Move)> + 'a> {
-        Box::new(
-            self.reasonable_moves_for_each_snake()
-                .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap())),
-        )
+    ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
+        self.reasonable_moves_for_each_snake()
+            .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap()))
     }
 }
 
@@ -96,42 +94,40 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
 {
     fn reasonable_moves_for_each_snake(
         &self,
-    ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Vec<Move>)> + '_> {
+    ) -> impl std::iter::Iterator<Item = (SnakeId, Vec<Move>)> {
         let width = self.embedded.get_actual_width();
-        Box::new(
-            self.embedded
-                .iter_healths()
-                .enumerate()
-                .filter(|(_, health)| **health > 0)
-                .map(move |(idx, _)| {
-                    let head_pos = self.get_head_as_position(&SnakeId(idx as u8));
+        self.embedded
+            .iter_healths()
+            .enumerate()
+            .filter(|(_, health)| **health > 0)
+            .map(move |(idx, _)| {
+                let head_pos = self.get_head_as_position(&SnakeId(idx as u8));
 
-                    let mvs = IntoIterator::into_iter(Move::all())
-                        .filter(|mv| {
-                            let new_head = head_pos.add_vec(mv.to_vector());
-                            let ci = CellIndex::new(new_head, width);
+                let mvs = IntoIterator::into_iter(Move::all())
+                    .filter(|mv| {
+                        let new_head = head_pos.add_vec(mv.to_vector());
+                        let ci = CellIndex::new(new_head, width);
 
-                            !self.off_board(new_head)
-                                && (!self.embedded.cell_is_body(ci)
-                                    || self.embedded.cell_is_single_tail(ci))
-                                && !self.embedded.cell_is_snake_head(ci)
-                        })
-                        .collect_vec();
-                    let mvs = if mvs.is_empty() { vec![Move::Up] } else { mvs };
+                        !self.off_board(new_head)
+                            && (!self.embedded.cell_is_body(ci)
+                                || self.embedded.cell_is_single_tail(ci))
+                            && !self.embedded.cell_is_snake_head(ci)
+                    })
+                    .collect_vec();
+                let mvs = if mvs.is_empty() { vec![Move::Up] } else { mvs };
 
-                    (SnakeId(idx as u8), mvs)
-                }),
-        )
+                (SnakeId(idx as u8), mvs)
+            })
     }
 }
 
 impl<
-        T: SimulatorInstruments,
-        D: Dimensions,
-        N: CN,
-        const BOARD_SIZE: usize,
-        const MAX_SNAKES: usize,
-    > SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
+    T: SimulatorInstruments,
+    D: Dimensions,
+    N: CN,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+> SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
 {
     #[allow(clippy::type_complexity)]
     #[instrument(level = "trace", skip_all)]

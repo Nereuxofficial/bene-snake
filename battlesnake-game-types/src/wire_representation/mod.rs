@@ -249,7 +249,7 @@ impl RandomReasonableMovesGame for Game {
     fn random_reasonable_move_for_each_snake<'a>(
         &'a self,
         rng: &'a mut impl rand::Rng,
-    ) -> Box<dyn Iterator<Item = (Self::SnakeIDType, Move)> + 'a> {
+    ) -> impl Iterator<Item = (Self::SnakeIDType, Move)> + 'a {
         Box::new(self.board.snakes.iter().map(move |s| {
             let all_moves = Move::all();
             let moves = all_moves.iter().filter(|mv| {

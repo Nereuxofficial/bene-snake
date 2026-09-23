@@ -345,7 +345,7 @@ pub trait HeadGettableGame: PositionGettableGame + SnakeIDGettableGame {
 
     /// get the head position for a given snake as some "native" type for this game
     fn get_head_as_native_position(&self, snake_id: &Self::SnakeIDType)
-        -> Self::NativePositionType;
+    -> Self::NativePositionType;
 }
 
 /// A game for which the food on the board can be queries
@@ -395,7 +395,7 @@ pub trait RandomReasonableMovesGame: SnakeIDGettableGame {
     fn random_reasonable_move_for_each_snake<'a>(
         &'a self,
         rng: &'a mut impl Rng,
-    ) -> Box<dyn Iterator<Item = (Self::SnakeIDType, Move)> + 'a>;
+    ) -> impl Iterator<Item = (Self::SnakeIDType, Move)> + 'a;
 }
 
 /// a game for which reasonable moves for a given snake can be determined. e.g. do not collide with yourself
@@ -403,7 +403,7 @@ pub trait ReasonableMovesGame: SnakeIDGettableGame {
     #[allow(missing_docs)]
     fn reasonable_moves_for_each_snake(
         &self,
-    ) -> Box<dyn Iterator<Item = (Self::SnakeIDType, Vec<Move>)> + '_>;
+    ) -> impl Iterator<Item = (Self::SnakeIDType, Vec<Move>)> + '_;
 }
 
 /// a game for which the neighbors of a given Position can be determined

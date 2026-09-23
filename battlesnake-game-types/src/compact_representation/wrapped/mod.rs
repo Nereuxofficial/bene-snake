@@ -7,8 +7,8 @@ use crate::types::*;
 use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
 use itertools::Itertools;
-use rand::seq::IndexedRandom;
 use rand::Rng;
+use rand::seq::IndexedRandom;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::error::Error;
@@ -19,10 +19,10 @@ use crate::{
     wire_representation::Position,
 };
 
-use super::core::{simulate_with_moves, EvaluateMode};
-use super::core::{CellBoard as CCB, CellIndex};
-use super::dimensions::{ArcadeMaze, Custom, Dimensions, Fixed, Square};
 use super::CellNum as CN;
+use super::core::{CellBoard as CCB, CellIndex};
+use super::core::{EvaluateMode, simulate_with_moves};
+use super::dimensions::{ArcadeMaze, Custom, Dimensions, Fixed, Square};
 
 /// A compact board representation that is significantly faster for simulation than
 /// `battlesnake_game_types::wire_representation::Game`.
@@ -154,7 +154,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn random_reasonable_move_for_each_snake<'a>(
         &'a self,
         rng: &'a mut impl Rng,
-    ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Move)> + 'a> {
+    ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
         Box::new(
             self.reasonable_moves_for_each_snake()
                 .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap())),
@@ -167,7 +167,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
 {
     fn reasonable_moves_for_each_snake(
         &self,
-    ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Vec<Move>)> + '_> {
+    ) -> impl std::iter::Iterator<Item = (SnakeId, Vec<Move>)> + '_ {
         let width = self.embedded.get_actual_width();
         Box::new(
             self.embedded
@@ -209,12 +209,12 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
 }
 
 impl<
-        T: SimulatorInstruments,
-        N: CN,
-        D: Dimensions,
-        const BOARD_SIZE: usize,
-        const MAX_SNAKES: usize,
-    > SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
+    T: SimulatorInstruments,
+    N: CN,
+    D: Dimensions,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+> SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
 {
     #[allow(clippy::type_complexity)]
     fn simulate_with_moves<S>(
@@ -283,9 +283,9 @@ mod test {
         compact_representation::core::Cell,
         game_fixture,
         types::{
-            build_snake_id_map, HeadGettableGame, HealthGettableGame, Move,
-            NeighborDeterminableGame, RandomReasonableMovesGame, ReasonableMovesGame,
-            SimulableGame, SimulatorInstruments, SnakeId,
+            HeadGettableGame, HealthGettableGame, Move, NeighborDeterminableGame,
+            RandomReasonableMovesGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
+            SnakeId, build_snake_id_map,
         },
         wire_representation::Position,
     };
