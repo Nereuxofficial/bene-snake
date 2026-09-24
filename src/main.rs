@@ -73,8 +73,7 @@ async fn get_move(body: String) -> Json<Value> {
     stop_bool.store(true, Ordering::Relaxed);
     let mut failed = false;
     let chosen_move = root_node
-        .best_child(0.0)
-        .map(|c| c.0.own_move())
+        .best_move(you)
         .unwrap_or_else(|| {
             failed = true;
             info!("Could not get move in game!");
