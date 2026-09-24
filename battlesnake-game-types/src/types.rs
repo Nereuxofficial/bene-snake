@@ -29,6 +29,14 @@ impl MoveArray {
         }
     }
 
+    /// Create a `MoveArray` holding all four moves.
+    pub const fn all() -> Self {
+        Self {
+            inner: [Move::Down, Move::Left, Move::Up, Move::Right],
+            len: 4,
+        }
+    }
+
     /// Append a move. A snake cannot have more than four possible moves.
     pub fn push(&mut self, mv: Move) {
         assert!((self.len as usize) < N_MOVES, "too many snake moves");

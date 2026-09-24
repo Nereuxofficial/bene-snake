@@ -8,7 +8,7 @@ use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
 use arrayvec::ArrayVec;
 use rand::Rng;
-use rand::seq::IndexedRandom;
+use rand::RngExt;
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::Display;
@@ -88,6 +88,28 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     }
 }
 
+/// Uniformly chooses one of the legal moves encoded in `legal_mask`, where bit
+/// `Move::as_index()` is set for each legal move.
+///
+/// An empty mask falls back to `Move::Up`, exactly matching the fallback used by
+/// `reasonable_moves_for_each_snake`.
+fn choose_from_legal_mask(legal_mask: u8, rng: &mut impl Rng) -> Move {
+    let legal_count = legal_mask.count_ones();
+    if legal_count == 0 {
+        return Move::Up;
+    }
+
+    let mut remaining = legal_mask;
+    let mut pick = rng.random_range(0..legal_count);
+    while pick > 0 {
+        // Clear the lowest set bit so we can find the `pick`-th legal move.
+        remaining &= remaining - 1;
+        pick -= 1;
+    }
+
+    Move::from_index(remaining.trailing_zeros() as usize)
+}
+
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     RandomReasonableMovesGame for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
@@ -95,9 +117,31 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         &'a self,
         rng: &'a mut impl Rng,
     ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
-        self.reasonable_moves_for_each_snake()
-            .into_iter()
-            .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap()))
+        let width = self.embedded.get_actual_width();
+        self.embedded
+            .iter_healths()
+            .enumerate()
+            .filter(|(_, health)| **health > 0)
+            .map(move |(idx, _)| {
+                let sid = SnakeId(idx as u8);
+                let head_pos = self.get_head_as_position(&sid);
+
+                // One scan of the four moves, recording legality in a stack-only bitmask.
+                let mut legal_mask = 0u8;
+                for mv in Move::all() {
+                    let new_head = head_pos.add_vec(mv.to_vector());
+                    let ci = CellIndex::new(new_head, width);
+                    if !self.off_board(new_head)
+                        && (!self.embedded.cell_is_body(ci)
+                            || self.embedded.cell_is_single_tail(ci))
+                        && !self.embedded.cell_is_snake_head(ci)
+                    {
+                        legal_mask |= 1 << mv.as_index();
+                    }
+                }
+
+                (sid, choose_from_legal_mask(legal_mask, rng))
+            })
     }
 }
 
@@ -285,7 +329,11 @@ impl ToBestCellBoard for Game {
 #[cfg(test)]
 mod test {
 
+    use std::collections::{BTreeSet, HashMap};
+
     use itertools::Itertools;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
 
     use super::*;
     use crate::{
@@ -600,5 +648,196 @@ mod test {
         let reasonable_moves_for_me = reasonable_moves[0].1;
 
         assert_eq!(reasonable_moves_for_me.as_slice(), &[Move::Up]);
+    }
+
+    /// Recomputes the legality bitmask for one snake, mirroring the predicate used by
+    /// `reasonable_moves_for_each_snake`. Used to prove a fixture genuinely has no legal moves.
+    fn legal_mask_for(board: &CellBoard4Snakes11x11, sid: SnakeId) -> u8 {
+        let width = board.embedded.get_actual_width();
+        let head_pos = board.get_head_as_position(&sid);
+        let mut mask = 0u8;
+        for mv in Move::all() {
+            let new_head = head_pos.add_vec(mv.to_vector());
+            let ci = CellIndex::new(new_head, width);
+            if !board.off_board(new_head)
+                && (!board.embedded.cell_is_body(ci) || board.embedded.cell_is_single_tail(ci))
+                && !board.embedded.cell_is_snake_head(ci)
+            {
+                mask |= 1 << mv.as_index();
+            }
+        }
+        mask
+    }
+
+    fn reasonable_support(board: &CellBoard4Snakes11x11) -> HashMap<SnakeId, BTreeSet<Move>> {
+        board
+            .reasonable_moves_for_each_snake()
+            .into_iter()
+            .map(|(sid, moves)| (sid, moves.into_iter().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn random_move_support_matches_reasonable_moves() {
+        let fixtures: &[(&str, &str)] = &[
+            (
+                "start_of_game",
+                include_str!("../../../fixtures/start_of_game.json"),
+            ),
+            ("cornered", include_str!("../../../fixtures/cornered.json")),
+            (
+                "tail_chase",
+                include_str!("../../../fixtures/tail_chase.json"),
+            ),
+            (
+                "late_stage",
+                include_str!("../../../fixtures/late_stage.json"),
+            ),
+            (
+                "all_options_dead",
+                include_str!("../../../fixtures/all-options-dead-prefer-out-of-bounds.json"),
+            ),
+        ];
+
+        let mut rng = SmallRng::seed_from_u64(0x5EED_1234);
+
+        for (name, fixture) in fixtures {
+            let game: DEGame = serde_json::from_str(fixture).expect("valid fixture");
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+
+            let reasonable = reasonable_support(&board);
+
+            let mut sampled: HashMap<SnakeId, BTreeSet<Move>> = HashMap::new();
+            for _ in 0..1_000 {
+                for (sid, mv) in board.random_reasonable_move_for_each_snake(&mut rng) {
+                    let legal = reasonable
+                        .get(&sid)
+                        .unwrap_or_else(|| panic!("{name}: move for non-living snake {sid:?}"));
+                    assert!(
+                        legal.contains(&mv),
+                        "{name}: sampled illegal move {mv:?} for {sid:?}"
+                    );
+                    sampled.entry(sid).or_default().insert(mv);
+                }
+            }
+
+            assert_eq!(
+                sampled, reasonable,
+                "{name}: sampled move support differs from the legal support"
+            );
+        }
+    }
+
+    #[test]
+    fn random_move_sampling_is_roughly_uniform_over_legal_moves() {
+        let game: DEGame =
+            serde_json::from_str(include_str!("../../../fixtures/start_of_game.json"))
+                .expect("valid fixture");
+        let ids = build_snake_id_map(&game);
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+
+        let reasonable = reasonable_support(&board);
+        let legal = &reasonable[&SnakeId(0)];
+        assert_eq!(
+            legal.len(),
+            3,
+            "fixture is expected to have three legal moves"
+        );
+
+        const DRAWS: usize = 20_000;
+        let mut counts: HashMap<Move, usize> = HashMap::new();
+        let mut rng = SmallRng::seed_from_u64(0xC0FF_EE);
+        for _ in 0..DRAWS {
+            let sampled: HashMap<SnakeId, Move> = board
+                .random_reasonable_move_for_each_snake(&mut rng)
+                .collect();
+            *counts.entry(sampled[&SnakeId(0)]).or_default() += 1;
+        }
+
+        // The sampler is uniform, so each move should land near DRAWS / legal.len().
+        // The band is intentionally loose: its job is to catch gross bias (for example
+        // always returning the first legal move) without being flaky.
+        let expected = DRAWS as f64 / legal.len() as f64;
+        for mv in legal {
+            let count = counts.get(mv).copied().unwrap_or(0) as f64;
+            assert!(
+                (count - expected).abs() <= expected * 0.15,
+                "move {mv:?} was sampled {count} times, expected about {expected}"
+            );
+        }
+    }
+
+    /// Snake 0's head sits in the bottom-left corner with its own body directly below it and
+    /// another snake's head to its right, so every one of its four moves is illegal.
+    const NO_LEGAL_MOVES_FIXTURE: &str = r##"{
+        "game": {
+            "id": "no-legal-moves",
+            "ruleset": { "name": "standard", "version": "v.1.2.3" },
+            "timeout": 500
+        },
+        "turn": 42,
+        "you": {
+            "health": 100,
+            "id": "you",
+            "name": "#22aa34",
+            "body": [{ "x": 0, "y": 0 }, { "x": 0, "y": 1 }, { "x": 0, "y": 2 }],
+            "head": { "x": 0, "y": 0 },
+            "length": 3
+        },
+        "board": {
+            "food": [],
+            "hazards": [],
+            "height": 11,
+            "width": 11,
+            "snakes": [
+                {
+                    "health": 100,
+                    "id": "you",
+                    "name": "#22aa34",
+                    "body": [{ "x": 0, "y": 0 }, { "x": 0, "y": 1 }, { "x": 0, "y": 2 }],
+                    "head": { "x": 0, "y": 0 },
+                    "length": 3
+                },
+                {
+                    "health": 100,
+                    "id": "#FF8331",
+                    "name": "#FF8331",
+                    "body": [{ "x": 1, "y": 0 }, { "x": 2, "y": 0 }],
+                    "head": { "x": 1, "y": 0 },
+                    "length": 2
+                }
+            ]
+        }
+    }"##;
+
+    #[test]
+    fn random_move_falls_back_to_up_when_no_legal_moves() {
+        let game: DEGame = serde_json::from_str(NO_LEGAL_MOVES_FIXTURE).expect("valid fixture");
+        let ids = build_snake_id_map(&game);
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+
+        // Prove the fixture is interesting: snake 0 really has zero legal moves, so the `Up`
+        // we observe below can only come from the fallback.
+        assert_eq!(legal_mask_for(&board, SnakeId(0)), 0);
+
+        let reasonable = reasonable_support(&board);
+        assert_eq!(
+            reasonable[&SnakeId(0)].iter().copied().collect::<Vec<_>>(),
+            vec![Move::Up]
+        );
+
+        let mut rng = SmallRng::seed_from_u64(7);
+        for _ in 0..100 {
+            let sampled: HashMap<SnakeId, Move> = board
+                .random_reasonable_move_for_each_snake(&mut rng)
+                .collect();
+            assert_eq!(sampled[&SnakeId(0)], Move::Up);
+        }
+
+        // The chooser itself always falls back on an empty mask.
+        for _ in 0..100 {
+            assert_eq!(choose_from_legal_mask(0, &mut rng), Move::Up);
+        }
     }
 }
