@@ -1,437 +1,310 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
 
-use crate::eval::evaluate_board;
-use crate::non_pushable_queue::NonPushableQueue;
 use arrayvec::ArrayVec;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        Action, HealthGettableGame, Move, MoveArray, RandomReasonableMovesGame,
-        ReasonableMovesGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        Action, HealthGettableGame, Move, RandomReasonableMovesGame, ReasonableMovesGame,
+        SimulatorInstruments, SnakeId, VictorDeterminableGame,
     },
 };
+use rand::{Rng, seq::IndexedRandom};
 
-/// Iterator that generates all possible combinations of moves for each snake (Cartesian product)
-struct MoveCombinationIterator {
-    snake_moves: ArrayVec<(SnakeId, MoveArray), 4>,
-    indices: [usize; 4],
-    remaining: usize,
-}
+use crate::eval::evaluate_board;
 
-impl MoveCombinationIterator {
-    fn new(snake_moves: impl IntoIterator<Item = (SnakeId, MoveArray)>) -> Self {
-        let snake_moves: ArrayVec<_, 4> = snake_moves.into_iter().collect();
-        // The empty product contains one empty combination.
-        let remaining = snake_moves.iter().map(|(_, moves)| moves.len()).product();
-        let indices = [0; 4];
-        Self {
-            snake_moves,
-            indices,
-            remaining,
-        }
-    }
-}
-
-impl Iterator for MoveCombinationIterator {
-    type Item = ArrayVec<(SnakeId, Move), 4>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        self.remaining -= 1;
-
-        // Handle empty snake_moves case: yield one empty combination
-        if self.snake_moves.is_empty() {
-            return Some(ArrayVec::new());
-        }
-
-        // Build current combination
-        let combination: ArrayVec<(SnakeId, Move), 4> = self
-            .snake_moves
-            .iter()
-            .zip(&self.indices)
-            .map(|((snake_id, moves), &idx)| (*snake_id, moves[idx]))
-            .collect();
-
-        // Increment indices (like counting in mixed-radix)
-        let mut carry = true;
-        for i in (0..self.snake_moves.len()).rev() {
-            if carry {
-                self.indices[i] += 1;
-                if self.indices[i] >= self.snake_moves[i].1.len() {
-                    self.indices[i] = 0;
-                } else {
-                    carry = false;
-                }
-            }
-        }
-
-        Some(combination)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
-}
-
-impl ExactSizeIterator for MoveCombinationIterator {}
-
-/// Generate an iterator over all possible combinations of moves for each snake (Cartesian product)
-fn generate_move_combinations(
-    snake_moves: ArrayVec<(SnakeId, MoveArray), 4>,
-) -> impl ExactSizeIterator<Item = ArrayVec<(SnakeId, Move), 4>> {
-    MoveCombinationIterator::new(snake_moves)
-}
-
-pub struct Node {
-    parent_node: Weak<Node>,
-    board: CellBoard4Snakes11x11,
-    next_nodes: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
-    possible_moves: NonPushableQueue<ArrayVec<(SnakeId, Move), 4>>,
-    wins: AtomicU32,
+#[derive(Default)]
+struct MoveStats {
     visits: AtomicU32,
+    reward: AtomicU64,
 }
+
+/// A board state before all snakes choose their next moves.
+pub struct Node {
+    board: CellBoard4Snakes11x11,
+    children: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
+    visits: AtomicU32,
+    own_moves: [MoveStats; 4],
+}
+
 #[derive(Debug)]
 struct Instr;
+
 impl SimulatorInstruments for Instr {
     fn observe_simulation(&self, _: std::time::Duration) {}
 }
+
 impl Node {
     pub fn new_root(board: CellBoard4Snakes11x11) -> Self {
-        Self::new_child(Weak::new(), board)
-    }
-    pub fn new_child(parent: Weak<Node>, board: CellBoard4Snakes11x11) -> Self {
-        let snake_moves = board.reasonable_moves_for_each_snake();
-        let move_combinations = generate_move_combinations(snake_moves);
-        Node {
-            parent_node: parent,
+        Self {
             board,
-            next_nodes: Mutex::new(BTreeMap::new()),
-            possible_moves: NonPushableQueue::new_from_iterator(move_combinations.into_iter()),
-            wins: AtomicU32::new(0),
+            children: Mutex::new(BTreeMap::new()),
             visits: AtomicU32::new(0),
+            own_moves: std::array::from_fn(|_| MoveStats::default()),
         }
     }
+
     pub fn get_depth(&self) -> u32 {
-        self.next_nodes
+        self.children
             .lock()
             .unwrap()
             .values()
-            .map(|n| n.get_depth() + 1)
+            .map(|child| child.get_depth() + 1)
             .max()
             .unwrap_or(0)
     }
-    pub fn best_child(&self, c: f32) -> Option<(Action<4>, Arc<Node>)> {
-        let parent_visits = self.visits.load(Ordering::Relaxed) as f32;
-        let children = self.next_nodes.lock().unwrap();
-        children
-            .iter()
-            .max_by(|(_, node1), (_, node2)| {
-                Self::ucb1_from_ref(*node1, c, parent_visits).total_cmp(&Self::ucb1_from_ref(
-                    *node2,
-                    c,
-                    parent_visits,
-                ))
+
+    fn legal_own_moves(&self, you: SnakeId) -> Option<battlesnake_game_types::types::MoveArray> {
+        self.board
+            .reasonable_moves_for_each_snake()
+            .into_iter()
+            .find(|(id, _)| *id == you)
+            .map(|(_, moves)| moves)
+    }
+
+    fn select_own_move(&self, you: SnakeId, exploration: f64) -> Option<Move> {
+        let moves = self.legal_own_moves(you)?;
+        let parent_visits = self.visits.load(Ordering::Relaxed) as f64;
+        moves.into_iter().max_by(|left, right| {
+            let value = |mv: &Move| {
+                let stats = &self.own_moves[mv.as_index()];
+                let visits = stats.visits.load(Ordering::Relaxed) as f64;
+                if visits == 0.0 {
+                    return f64::INFINITY;
+                }
+                let mean = stats.reward.load(Ordering::Relaxed) as f64 / (visits * 1000.0);
+                mean + exploration * ((parent_visits + 1.0).ln() / visits).sqrt()
+            };
+            value(left).total_cmp(&value(right))
+        })
+    }
+
+    /// Choose only bene-snake's move. Opponent responses are averaged through visits.
+    pub fn best_move(&self, you: SnakeId) -> Option<Move> {
+        let moves = self.legal_own_moves(you)?;
+        moves.into_iter().max_by(|left, right| {
+            let stats = |mv: &Move| &self.own_moves[mv.as_index()];
+            let left_visits = stats(left).visits.load(Ordering::Relaxed);
+            let right_visits = stats(right).visits.load(Ordering::Relaxed);
+            left_visits.cmp(&right_visits).then_with(|| {
+                let mean = |mv: &Move, visits: u32| {
+                    stats(mv).reward.load(Ordering::Relaxed) as f64 / visits.max(1) as f64
+                };
+                mean(left, left_visits).total_cmp(&mean(right, right_visits))
             })
-            .map(|(action, node)| (*action, Arc::clone(node)))
-    }
-    pub fn is_fully_expanded(&self) -> bool {
-        self.possible_moves.is_empty()
+        })
     }
 
-    /// Progressive widening: determine if we should expand more children
-    /// based on the number of visits to this node
-    /// Formula: k * visits^alpha where k=2, alpha=0.5 (square root)
-    /// This limits early branching and allows more exploitation before exploration
-    pub fn should_expand_more(&self) -> bool {
-        if self.is_fully_expanded() {
-            return false;
+    fn sample_joint_action(
+        &self,
+        you: SnakeId,
+        own_move: Move,
+        rng: &mut impl Rng,
+    ) -> ArrayVec<(SnakeId, Move), 4> {
+        self.board
+            .reasonable_moves_for_each_snake()
+            .into_iter()
+            .map(|(id, moves)| {
+                let mv = if id == you {
+                    own_move
+                } else {
+                    *moves.choose(rng).expect("living snake has a move")
+                };
+                (id, mv)
+            })
+            .collect()
+    }
+
+    fn child_for_action(
+        &self,
+        action: &[(SnakeId, Move)],
+    ) -> (Option<Arc<Node>>, CellBoard4Snakes11x11, bool) {
+        let key = Action::collect_from(action.iter());
+        if let Some(child) = self.children.lock().unwrap().get(&key) {
+            return (Some(Arc::clone(child)), child.board, false);
         }
 
-        let visits = self.visits.load(Ordering::Relaxed);
-        let num_children = self.next_nodes.lock().unwrap().len();
-
-        // Progressive widening: allow 3 + 2*sqrt(visits) children
-        // Start with 3 children minimum to ensure we explore multiple options early
-        let max_children = 3 + (2.0 * (visits as f32).sqrt()) as usize;
-
-        num_children < max_children
-    }
-
-    fn expand_child(self: &Arc<Self>) -> Option<(Action<4>, Arc<Node>)> {
-        let moves = self.possible_moves.pop_front()?;
-
-        let (action, next_board) = self.board.simulate_single_action(&Instr, &moves);
-        let node = Self::new_child(Arc::downgrade(self), next_board);
-        let mut next_nodes_lock = self.next_nodes.lock().unwrap();
-        let node = Arc::new(node);
-        next_nodes_lock.insert(action, Arc::clone(&node));
-        Some((action, node))
-    }
-
-    pub fn expand(self: Arc<Self>, _you: &SnakeId) -> bool {
-        self.expand_child().is_some()
-    }
-
-    pub fn ucb1(self: Arc<Self>, c: f32, visits_to_parent: f32) -> f32 {
-        Self::ucb1_from_ref(self, c, visits_to_parent)
-    }
-    pub fn ucb1_from_ref(node: impl AsRef<Self>, c: f32, visits_to_parent: f32) -> f32 {
-        let reference = node.as_ref();
-        let visits = reference.visits.load(Ordering::Relaxed);
-        if visits == 0 {
-            return f32::INFINITY; // Unvisited nodes should be explored first
+        let next_board = self.board.simulate_single_action(&Instr, action).1;
+        let max_children = 3 + 2 * (self.visits.load(Ordering::Relaxed) as f64).sqrt() as usize;
+        let mut children = self.children.lock().unwrap();
+        if children.len() >= max_children {
+            return (None, next_board, false);
         }
 
-        // Normalize wins by visits to get average score (since rollout returns 0-1000)
-        let avg_score = (reference.wins.load(Ordering::Relaxed) as f32) / (visits as f32);
-
-        // UCB1 formula: avg_score + c * sqrt(ln(parent_visits) / visits)
-        avg_score.algebraic_add(
-            c.algebraic_mul(visits_to_parent.ln().sqrt().algebraic_div(visits as f32)),
-        )
+        let child = Arc::new(Node::new_root(next_board));
+        children.insert(key, Arc::clone(&child));
+        (Some(child), next_board, true)
     }
 
-    pub fn rollout(self: Arc<Self>, you: &SnakeId) -> u32 {
-        const MAX_ROLLOUT_DEPTH: u32 = 100; // Limit depth to prevent extremely long simulations
-
-        let mut rng = rand::rng();
-        let mut cur_board = self.board;
-        let mut moves = ArrayVec::<(SnakeId, Move), 4>::new();
-        let mut depth = 0;
-
-        while !cur_board.is_over() && depth < MAX_ROLLOUT_DEPTH {
-            moves.clear();
-            cur_board
-                .random_reasonable_move_for_each_snake(&mut rng)
-                .collect_into(&mut moves);
-
-            let next_board = cur_board.simulate_single_action(&Instr, &moves).1;
-            cur_board = next_board;
-            depth += 1;
-        }
-
-        // Return score based on final state
-        if cur_board.get_health(you) == 0 {
-            0 // We died - worst outcome
-        } else if cur_board.is_over() && cur_board.get_winner().is_some_and(|w| w == *you) {
-            1000 // We won - best outcome
-        } else if cur_board.is_over() {
-            0 // We lost
-        } else {
-            // Game not over but we hit depth limit
-            // Use evaluation function to estimate position quality
-            // This gives much better signal than binary win/loss
-            let eval_score = evaluate_board(&cur_board, you);
-            // Normalize eval to 0-1000 range, capped at 1000
-            eval_score.min(1000) as u32
-        }
+    fn record(&self, own_move: Move, result: u32) {
+        let stats = &self.own_moves[own_move.as_index()];
+        stats.reward.fetch_add(result as u64, Ordering::Relaxed);
+        stats.visits.fetch_add(1, Ordering::Relaxed);
+        self.visits.fetch_add(1, Ordering::Relaxed);
     }
-    pub fn is_terminal(&self) -> bool {
-        self.board.is_over()
-    }
-    pub fn backpropagate(self: Arc<Self>, result: u32) {
-        self.visits
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        // Result is now in 0-1000 range instead of 0-1
-        self.wins
-            .fetch_add(result, std::sync::atomic::Ordering::AcqRel);
-        if let Some(parent) = self.parent_node.upgrade() {
-            parent.backpropagate(result)
-        }
+
+    pub fn rollout(&self, you: &SnakeId) -> u32 {
+        rollout_from(self.board, you)
     }
 }
 
-pub fn mcts_search(root_node: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
-    // Use sqrt(2) as exploration constant (standard UCB1 value)
-    // Slightly higher to encourage more exploration
-    const EXPLORATION_CONSTANT: f32 = 1.6;
+fn rollout_from(mut board: CellBoard4Snakes11x11, you: &SnakeId) -> u32 {
+    const MAX_ROLLOUT_DEPTH: u32 = 100;
+    let mut rng = rand::rng();
+    let mut moves = ArrayVec::<(SnakeId, Move), 4>::new();
+    let mut depth = 0;
 
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
+    while !board.is_over() && board.get_health(you) > 0 && depth < MAX_ROLLOUT_DEPTH {
+        moves.clear();
+        board
+            .random_reasonable_move_for_each_snake(&mut rng)
+            .collect_into(&mut moves);
+        board = board.simulate_single_action(&Instr, &moves).1;
+        depth += 1;
+    }
+
+    if board.get_health(you) == 0 {
+        0
+    } else if board.is_over() && board.get_winner().is_some_and(|winner| winner == *you) {
+        1000
+    } else if board.is_over() {
+        0
+    } else {
+        evaluate_board(&board, you).min(1000) as u32
+    }
+}
+
+fn search_iteration(root: &Arc<Node>, you: &SnakeId, rng: &mut impl Rng) {
+    const EXPLORATION: f64 = 1.0;
+    const MAX_TREE_DEPTH: usize = 64;
+    let mut path = Vec::with_capacity(16);
+    let mut node = Arc::clone(root);
+    let result = loop {
+        if node.board.is_over() || node.board.get_health(you) == 0 || path.len() == MAX_TREE_DEPTH {
+            break node.rollout(you);
         }
-        let mut node = root_node.clone();
 
-        // Selection: traverse tree using UCB1 until we find a node that can be expanded
-        while !node.is_terminal() && !node.should_expand_more() {
-            if let Some((_, child)) = node.best_child(EXPLORATION_CONSTANT) {
-                node = child;
-            } else {
-                break;
-            }
+        let Some(own_move) = node.select_own_move(*you, EXPLORATION) else {
+            break node.rollout(you);
+        };
+        let action = node.sample_joint_action(*you, own_move, rng);
+        let (child, next_board, newly_expanded) = node.child_for_action(&action);
+        path.push((Arc::clone(&node), own_move));
+
+        match child {
+            Some(next) if !newly_expanded => node = next,
+            _ => break rollout_from(next_board, you),
         }
+    };
 
-        // Expansion: add a new child if possible (progressive widening)
-        if !node.is_terminal()
-            && node.should_expand_more()
-            && let Some((_, child)) = node.expand_child()
-        {
-            node = child;
-        }
+    for (visited, own_move) in path {
+        visited.record(own_move, result);
+    }
+}
 
-        // Simulation: rollout from current node
-        let result = node.clone().rollout(you);
+/// Perform one search iteration, mainly useful for profiling the search.
+pub fn search_once(root: &Arc<Node>, you: &SnakeId) {
+    search_iteration(root, you, &mut rand::rng());
+}
 
-        // Backpropagation: update statistics up the tree
-        node.backpropagate(result);
+pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
+    let mut rng = rand::rng();
+    while !stop.load(Ordering::Relaxed) {
+        search_iteration(&root, you, &mut rng);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game as DEGame};
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
+    use rand::SeedableRng;
+    use std::{thread, time::Duration};
+
+    fn turn33() -> (CellBoard4Snakes11x11, SnakeId, SnakeId) {
+        let game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
+            .expect("valid turn-33 fixture");
+        let ids = build_snake_id_map(&game);
+        let board = game.as_cell_board(&ids).expect("valid board");
+        (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
+    }
 
     #[test]
-    fn test_mcts_search_terminates_on_stop_signal() {
-        // Load a test fixture
-        let game_fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
-        let game: DEGame = serde_json::from_str(game_fixture).expect("valid fixture");
-        let snake_id_map = build_snake_id_map(&game);
-        let board: CellBoard4Snakes11x11 = game.as_cell_board(&snake_id_map).expect("valid board");
+    fn opponent_moves_are_sampled_independently_of_our_move() {
+        let (board, you, opponent) = turn33();
+        let node = Node::new_root(board);
+        let mut up_rng = rand::rngs::SmallRng::seed_from_u64(12);
+        let mut down_rng = rand::rngs::SmallRng::seed_from_u64(12);
+        for _ in 0..100 {
+            let up = node.sample_joint_action(you, Move::Up, &mut up_rng);
+            let down = node.sample_joint_action(you, Move::Down, &mut down_rng);
+            assert_eq!(
+                up.iter().find(|(id, _)| *id == opponent),
+                down.iter().find(|(id, _)| *id == opponent)
+            );
+        }
+    }
 
-        let you = SnakeId(0);
-        let root_node = Arc::new(Node::new_root(board));
+    #[test]
+    fn move_statistics_aggregate_across_opponent_responses() {
+        let (board, you, _) = turn33();
+        let node = Node::new_root(board);
+        node.record(Move::Up, 1000);
+        node.record(Move::Up, 0);
+        node.record(Move::Right, 1000);
+        assert_eq!(
+            node.own_moves[Move::Up.as_index()]
+                .visits
+                .load(Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            node.own_moves[Move::Up.as_index()]
+                .reward
+                .load(Ordering::Relaxed),
+            1000
+        );
+        assert_eq!(node.best_move(you), Some(Move::Up));
+    }
+
+    #[test]
+    fn search_stops_and_produces_a_legal_move() {
+        let (board, you, _) = turn33();
+        let root = Arc::new(Node::new_root(board));
         let stop = Arc::new(AtomicBool::new(false));
-
-        // Clone for the thread
-        let stop_clone = Arc::clone(&stop);
-        let root_clone = Arc::clone(&root_node);
-
-        // Start mcts_search in a separate thread
-        let search_thread = thread::spawn(move || {
-            mcts_search(root_clone, &you, stop_clone);
-        });
-
-        // Let it run for a bit to ensure it's actually searching
-        thread::sleep(Duration::from_millis(100));
-
-        // Signal stop
-        let stop_time = Instant::now();
+        let search_root = Arc::clone(&root);
+        let search_stop = Arc::clone(&stop);
+        let search = thread::spawn(move || mcts_search(search_root, &you, search_stop));
+        thread::sleep(Duration::from_millis(50));
         stop.store(true, Ordering::Relaxed);
-
-        // Wait for the thread to finish with a timeout
-        let join_result = search_thread.join();
-        let elapsed = stop_time.elapsed();
-
-        // Verify the thread finished successfully
+        search.join().unwrap();
+        assert!(root.visits.load(Ordering::Relaxed) > 0);
         assert!(
-            join_result.is_ok(),
-            "mcts_search thread should finish cleanly"
-        );
-
-        // Verify it terminated reasonably quickly (within 1 second)
-        // If it didn't respect the stop signal, this would timeout or take much longer
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "mcts_search should terminate quickly after stop signal, took {:?}",
-            elapsed
-        );
-
-        // Verify that at least some work was done
-        let visits = root_node.visits.load(Ordering::Acquire);
-        assert!(
-            visits > 0,
-            "mcts_search should have performed at least some iterations"
-        );
-
-        println!(
-            "Test passed: mcts_search terminated after {} visits in {:?}",
-            visits, elapsed
+            root.legal_own_moves(you)
+                .unwrap()
+                .contains(&root.best_move(you).unwrap())
         );
     }
 
     #[test]
-    fn test_mcts_search_immediate_stop() {
-        // Test that if stop is already true, mcts_search doesn't do any work
-        let game_fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
-        let game: DEGame = serde_json::from_str(game_fixture).expect("valid fixture");
-        let snake_id_map = build_snake_id_map(&game);
-        let board: CellBoard4Snakes11x11 = game.as_cell_board(&snake_id_map).expect("valid board");
-
-        let you = SnakeId(0);
-        let root_node = Arc::new(Node::new_root(board));
-        let stop = Arc::new(AtomicBool::new(true)); // Already set to true
-
-        // Run mcts_search with stop already set
-        mcts_search(root_node.clone(), &you, stop);
-
-        // Verify no work was done
-        let visits = root_node.visits.load(Ordering::Acquire);
-        assert_eq!(
-            visits, 0,
-            "mcts_search should not perform any iterations when stop is already true"
-        );
-    }
-
-    #[test]
-    fn test_move_combination_iterator() {
-        // Test empty input - should yield one empty combination
-        let empty_iter = MoveCombinationIterator::new(vec![]);
-        let empty_result: Vec<_> = empty_iter.collect();
-        assert_eq!(empty_result.len(), 1);
-        assert!(empty_result[0].is_empty());
-
-        // Test single snake with multiple moves
-        let snake1 = SnakeId(0);
-        let single_snake = vec![(snake1, [Move::Up, Move::Down, Move::Left].into())];
-        let single_result: Vec<_> = MoveCombinationIterator::new(single_snake).collect();
-        assert_eq!(single_result.len(), 3);
-        assert_eq!(single_result[0].as_slice(), &[(snake1, Move::Up)]);
-        assert_eq!(single_result[1].as_slice(), &[(snake1, Move::Down)]);
-        assert_eq!(single_result[2].as_slice(), &[(snake1, Move::Left)]);
-
-        // Test two snakes (Cartesian product)
-        let snake2 = SnakeId(1);
-        let two_snakes = vec![
-            (snake1, [Move::Up, Move::Down].into()),
-            (snake2, [Move::Left, Move::Right].into()),
-        ];
-        let two_result: Vec<_> = MoveCombinationIterator::new(two_snakes).collect();
-        assert_eq!(two_result.len(), 4); // 2 x 2 = 4
-        assert_eq!(
-            two_result[0].as_slice(),
-            &[(snake1, Move::Up), (snake2, Move::Left)]
-        );
-        assert_eq!(
-            two_result[1].as_slice(),
-            &[(snake1, Move::Up), (snake2, Move::Right)]
-        );
-        assert_eq!(
-            two_result[2].as_slice(),
-            &[(snake1, Move::Down), (snake2, Move::Left)]
-        );
-        assert_eq!(
-            two_result[3].as_slice(),
-            &[(snake1, Move::Down), (snake2, Move::Right)]
-        );
-
-        // Test three snakes
-        let snake3 = SnakeId(2);
-        let three_snakes = vec![
-            (snake1, [Move::Up, Move::Down].into()),
-            (snake2, [Move::Left].into()),
-            (snake3, [Move::Right, Move::Up].into()),
-        ];
-        let three_result: Vec<_> = MoveCombinationIterator::new(three_snakes).collect();
-        assert_eq!(three_result.len(), 4); // 2 x 1 x 2 = 4
-
-        // Test snake with no moves (should yield no combinations)
-        let no_moves = vec![
-            (snake1, [Move::Up].into()),
-            (snake2, [].into()), // No moves for this snake
-        ];
-        let no_moves_result: Vec<_> = MoveCombinationIterator::new(no_moves).collect();
-        assert_eq!(no_moves_result.len(), 0);
+    #[ignore = "manual replay diagnostic"]
+    fn diagnose_turn33_food_choice() {
+        let (board, you, _) = turn33();
+        for _ in 0..8 {
+            let root = Arc::new(Node::new_root(board));
+            let stop = Arc::new(AtomicBool::new(false));
+            let search_root = Arc::clone(&root);
+            let search_stop = Arc::clone(&stop);
+            let search = thread::spawn(move || mcts_search(search_root, &you, search_stop));
+            thread::sleep(Duration::from_millis(400));
+            stop.store(true, Ordering::Relaxed);
+            search.join().unwrap();
+            println!("{:?}", root.best_move(you));
+        }
     }
 }

@@ -6,7 +6,7 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use lib::mcts::Node;
+use lib::mcts::{Node, search_once};
 
 fn bench_expand(c: &mut Criterion) {
     let fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
@@ -18,10 +18,10 @@ fn bench_expand(c: &mut Criterion) {
     c.bench_function("node_creation", |b| {
         b.iter(|| black_box(Node::new_root(black_box(board))))
     });
-    c.bench_function("expand_single", |b| {
+    c.bench_function("search_first_iteration", |b| {
         b.iter_batched(
             || Arc::new(Node::new_root(board)),
-            |node| black_box(node.expand(black_box(&you))),
+            |node| search_once(&node, black_box(&you)),
             BatchSize::SmallInput,
         )
     });

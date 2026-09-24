@@ -10,7 +10,7 @@ mod stats;
 
 use lib::Agent;
 use agents::{HeuristicAgent, MctsAgent, MinimaxAgent, RandomAgent};
-use runner::{run_game, GameConfig};
+use runner::{run_game, run_game_seeded, GameConfig};
 use stats::{HeadToHeadStats, TournamentStats};
 
 #[derive(Parser)]
@@ -88,6 +88,10 @@ enum Commands {
         /// Output results as JSON
         #[arg(long)]
         json: bool,
+
+        /// Reuse the same starting boards across benchmark runs
+        #[arg(long)]
+        seed: Option<u64>,
     },
 
     /// Run a quick benchmark to test performance
@@ -125,6 +129,7 @@ impl AgentType {
     }
 }
 
+
 fn main() {
     let cli = Cli::parse();
 
@@ -149,8 +154,9 @@ fn main() {
             max_turns,
             parallel,
             json,
+            seed,
         } => {
-            run_duel_cmd(agent1, agent2, games, mcts_time, minimax_depth, max_turns, parallel, json);
+            run_duel_cmd(agent1, agent2, games, mcts_time, minimax_depth, max_turns, parallel, json, seed);
         }
         Commands::Benchmark {
             games,
@@ -258,6 +264,7 @@ fn run_duel_cmd(
     max_turns: u32,
     parallel: bool,
     json_output: bool,
+    seed: Option<u64>,
 ) {
     if !json_output {
         println!("\n{}", "=== Snake Gym Duel ===".green().bold());
@@ -295,8 +302,11 @@ fn run_duel_cmd(
         use rayon::prelude::*;
         (0..num_games)
             .into_par_iter()
-            .map(|_| {
-                let result = run_game(&agents, &config);
+            .map(|index| {
+                let result = seed.map_or_else(
+                    || run_game(&agents, &config),
+                    |seed| run_game_seeded(&agents, &config, seed.wrapping_add(index as u64)),
+                );
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -305,8 +315,11 @@ fn run_duel_cmd(
             .collect()
     } else {
         (0..num_games)
-            .map(|_| {
-                let result = run_game(&agents, &config);
+            .map(|index| {
+                let result = seed.map_or_else(
+                    || run_game(&agents, &config),
+                    |seed| run_game_seeded(&agents, &config, seed.wrapping_add(index as u64)),
+                );
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }

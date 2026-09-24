@@ -14,7 +14,7 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::mcts::Node;
+use lib::mcts::{Node, search_once};
 
 #[global_allocator]
 static ALLOCATOR: Allocator<System> = Allocator::system();
@@ -65,7 +65,7 @@ fn bench_expand_allocations(c: &mut Criterion) {
             let span = operation.measure_thread().iterations(iters);
             for _ in 0..iters {
                 let root = Arc::new(Node::new_root(board));
-                black_box(root.expand(black_box(&you)));
+                search_once(&root, black_box(&you));
             }
             drop(span);
             start.elapsed()

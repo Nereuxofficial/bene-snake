@@ -41,7 +41,6 @@ impl Agent for Box<dyn Agent> {
 pub struct MctsAgent {
     name: String,
     think_time: Duration,
-    exploration_constant: f32,
 }
 
 impl MctsAgent {
@@ -49,7 +48,6 @@ impl MctsAgent {
         Self {
             name: "MCTS".to_string(),
             think_time,
-            exploration_constant: 0.0,
         }
     }
 
@@ -57,7 +55,6 @@ impl MctsAgent {
         Self {
             name: name.into(),
             think_time,
-            exploration_constant: 0.0,
         }
     }
 }
@@ -88,11 +85,8 @@ impl Agent for MctsAgent {
         stop.store(true, Ordering::Relaxed);
         let _ = search_thread.join();
 
-        if let Some((action, _)) = root_node.best_child(self.exploration_constant) {
-            let moves = action.into_inner();
-            if let Some(mv) = moves[you.0 as usize] {
-                return mv;
-            }
+        if let Some(mv) = root_node.best_move(you) {
+            return mv;
         }
 
         Move::Up

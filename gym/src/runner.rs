@@ -8,7 +8,7 @@ use battlesnake_game_types::{
     },
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
-use rand::RngExt;
+use rand::{Rng, RngExt, SeedableRng, rngs::SmallRng};
 use rand::seq::SliceRandom;
 
 use crate::stats::GameResult;
@@ -63,6 +63,15 @@ impl GameConfig {
 /// Generates a random starting position for the game
 pub fn generate_random_game(config: &GameConfig) -> Game {
     let mut rng = rand::rng();
+    generate_random_game_with_rng(config, &mut rng)
+}
+
+pub fn generate_random_game_with_seed(config: &GameConfig, seed: u64) -> Game {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    generate_random_game_with_rng(config, &mut rng)
+}
+
+fn generate_random_game_with_rng(config: &GameConfig, rng: &mut impl Rng) -> Game {
 
     // Standard starting positions for snakes (corners and edges)
     let standard_positions = vec![
@@ -78,7 +87,7 @@ pub fn generate_random_game(config: &GameConfig) -> Game {
 
     // Shuffle and take positions for snakes
     let mut positions = standard_positions;
-    positions.shuffle(&mut rng);
+    positions.shuffle(rng);
     let snake_positions: Vec<_> = positions.into_iter().take(config.num_snakes).collect();
 
     // Create snakes
@@ -149,6 +158,14 @@ pub fn generate_random_game(config: &GameConfig) -> Game {
 
 /// Runs a single game with the given agents
 pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
+    run_game_from_start(agents, config, generate_random_game(config))
+}
+
+pub fn run_game_seeded(agents: &[&dyn Agent], config: &GameConfig, seed: u64) -> GameResult {
+    run_game_from_start(agents, config, generate_random_game_with_seed(config, seed))
+}
+
+fn run_game_from_start(agents: &[&dyn Agent], config: &GameConfig, game: Game) -> GameResult {
     assert!(
         agents.len() >= config.num_snakes,
         "Need at least {} agents for {} snakes",
@@ -156,8 +173,6 @@ pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
         config.num_snakes
     );
 
-    // Generate starting position
-    let game = generate_random_game(config);
     let snake_id_map = build_snake_id_map(&game);
     let mut board: CellBoard4Snakes11x11 = game
         .as_cell_board(&snake_id_map)
@@ -237,4 +252,18 @@ pub fn run_tournament_parallel(
         .into_par_iter()
         .map(|_| run_game(agents, config))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeded_starts_reproduce_the_same_board() {
+        let config = GameConfig::duel();
+        assert_eq!(
+            generate_random_game_with_seed(&config, 20260924),
+            generate_random_game_with_seed(&config, 20260924)
+        );
+    }
 }

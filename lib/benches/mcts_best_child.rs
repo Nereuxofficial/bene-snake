@@ -6,9 +6,9 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::mcts::Node;
+use lib::mcts::{Node, search_once};
 
-fn root_with_visited_children(children: usize) -> Arc<Node> {
+fn root_after_iterations(iterations: usize) -> Arc<Node> {
     let fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
     let game: Game = serde_json::from_str(fixture).expect("valid game fixture");
     let snake_ids = build_snake_id_map(&game);
@@ -16,23 +16,19 @@ fn root_with_visited_children(children: usize) -> Arc<Node> {
     let you = *board.you_id();
     let root = Arc::new(Node::new_root(board));
 
-    for _ in 0..children {
-        assert!(Arc::clone(&root).expand(&you), "enough legal actions");
-    }
-    // UCB1 prioritizes unvisited children. Visit each one so selection exercises scoring.
-    for _ in 0..children {
-        let (_, child) = root.best_child(1.6).expect("expanded child");
-        child.backpropagate(500);
+    for _ in 0..iterations {
+        search_once(&root, &you);
     }
     root
 }
 
-fn bench_best_child(c: &mut Criterion) {
-    let mut group = c.benchmark_group("best_child");
-    for children in [4, 16] {
-        let root = root_with_visited_children(children);
-        group.bench_function(format!("{children}_children"), |b| {
-            b.iter(|| black_box(root.best_child(black_box(1.6))))
+fn bench_best_move(c: &mut Criterion) {
+    let mut group = c.benchmark_group("best_move");
+    for iterations in [4, 16] {
+        let root = root_after_iterations(iterations);
+        let you = battlesnake_game_types::types::SnakeId(0);
+        group.bench_function(format!("{iterations}_iterations"), |b| {
+            b.iter(|| black_box(root.best_move(black_box(you))))
         });
     }
     group.finish();
@@ -43,6 +39,6 @@ criterion_group! {
     config = Criterion::default()
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(5));
-    targets = bench_best_child
+    targets = bench_best_move
 }
 criterion_main!(benches);

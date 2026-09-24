@@ -1,0 +1,15 @@
+{
+  "game": {"id": "cfc97123-c721-4085-8504-dba10aff3bbb", "ruleset": {"name": "standard", "version": "v1.0.0"}, "timeout": 500},
+  "turn": 33,
+  "board": {
+    "height": 11,
+    "width": 11,
+    "snakes": [
+      {"id": "gs_DMbcFRCDT4KKDpqyhBF8bGkQ", "name": "Amp Battlesnake", "health": 100, "body": [{"x":2,"y":9},{"x":1,"y":9},{"x":1,"y":8},{"x":1,"y":7},{"x":1,"y":6},{"x":1,"y":5},{"x":1,"y":4},{"x":1,"y":3},{"x":0,"y":3},{"x":0,"y":3}], "head": {"x":2,"y":9}},
+      {"id": "gs_P7YF9vxB7Bqk96pRC99K4FD4", "name": "bene-snake", "health": 77, "body": [{"x":9,"y":8},{"x":8,"y":8},{"x":7,"y":8},{"x":6,"y":8}], "head": {"x":9,"y":8}}
+    ],
+    "food": [{"x":9,"y":9},{"x":7,"y":9}],
+    "hazards": []
+  },
+  "you": {"id": "gs_P7YF9vxB7Bqk96pRC99K4FD4", "name": "bene-snake", "health": 77, "body": [{"x":9,"y":8},{"x":8,"y":8},{"x":7,"y":8},{"x":6,"y":8}], "head": {"x":9,"y":8}}
+}
