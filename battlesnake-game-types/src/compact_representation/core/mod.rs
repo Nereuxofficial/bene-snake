@@ -10,7 +10,7 @@ use crate::{
 
 pub use cell_board::{CellBoard, EvaluateMode};
 pub use cell_num::CellNum;
-pub use simulate::simulate_with_moves;
+pub use simulate::{simulate_single_action, simulate_with_moves};
 
 /// wrapper type for an index in to the board
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]

@@ -13,7 +13,7 @@ use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
         Action, HealthGettableGame, Move, MoveArray, RandomReasonableMovesGame,
-        ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        ReasonableMovesGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
     },
 };
 
@@ -21,19 +21,19 @@ use battlesnake_game_types::{
 struct MoveCombinationIterator {
     snake_moves: ArrayVec<(SnakeId, MoveArray), 4>,
     indices: [usize; 4],
-    exhausted: bool,
+    remaining: usize,
 }
 
 impl MoveCombinationIterator {
     fn new(snake_moves: impl IntoIterator<Item = (SnakeId, MoveArray)>) -> Self {
         let snake_moves: ArrayVec<_, 4> = snake_moves.into_iter().collect();
-        // Empty input or any snake with no moves means we'll yield once then stop
-        let exhausted = snake_moves.iter().any(|(_, moves)| moves.is_empty());
+        // The empty product contains one empty combination.
+        let remaining = snake_moves.iter().map(|(_, moves)| moves.len()).product();
         let indices = [0; 4];
         Self {
             snake_moves,
             indices,
-            exhausted,
+            remaining,
         }
     }
 }
@@ -42,13 +42,13 @@ impl Iterator for MoveCombinationIterator {
     type Item = ArrayVec<(SnakeId, Move), 4>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.exhausted {
+        if self.remaining == 0 {
             return None;
         }
+        self.remaining -= 1;
 
         // Handle empty snake_moves case: yield one empty combination
         if self.snake_moves.is_empty() {
-            self.exhausted = true;
             return Some(ArrayVec::new());
         }
 
@@ -73,19 +73,20 @@ impl Iterator for MoveCombinationIterator {
             }
         }
 
-        // If we still have carry, we've exhausted all combinations
-        if carry {
-            self.exhausted = true;
-        }
-
         Some(combination)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
 }
+
+impl ExactSizeIterator for MoveCombinationIterator {}
 
 /// Generate an iterator over all possible combinations of moves for each snake (Cartesian product)
 fn generate_move_combinations(
     snake_moves: ArrayVec<(SnakeId, MoveArray), 4>,
-) -> impl Iterator<Item = ArrayVec<(SnakeId, Move), 4>> {
+) -> impl ExactSizeIterator<Item = ArrayVec<(SnakeId, Move), 4>> {
     MoveCombinationIterator::new(snake_moves)
 }
 
@@ -167,21 +168,12 @@ impl Node {
     fn expand_child(self: &Arc<Self>) -> Option<(Action<4>, Arc<Node>)> {
         let moves = self.possible_moves.pop_front()?;
 
-        let moves_for_simulation: ArrayVec<_, 4> =
-            moves.into_iter().map(|(sid, mv)| (sid, [mv])).collect();
-
-        if let Some((action, next_board)) = self
-            .board
-            .simulate_with_moves(&Instr, &moves_for_simulation)
-            .next()
-        {
-            let node = Self::new_child(Arc::downgrade(self), next_board);
-            let mut next_nodes_lock = self.next_nodes.lock().unwrap();
-            let node = Arc::new(node);
-            next_nodes_lock.insert(action, Arc::clone(&node));
-            return Some((action, node));
-        }
-        None
+        let (action, next_board) = self.board.simulate_single_action(&Instr, &moves);
+        let node = Self::new_child(Arc::downgrade(self), next_board);
+        let mut next_nodes_lock = self.next_nodes.lock().unwrap();
+        let node = Arc::new(node);
+        next_nodes_lock.insert(action, Arc::clone(&node));
+        Some((action, node))
     }
 
     pub fn expand(self: Arc<Self>, _you: &SnakeId) -> bool {
@@ -212,21 +204,16 @@ impl Node {
 
         let mut rng = rand::rng();
         let mut cur_board = self.board;
-        let mut moves = Vec::with_capacity(4);
+        let mut moves = ArrayVec::<(SnakeId, Move), 4>::new();
         let mut depth = 0;
 
         while !cur_board.is_over() && depth < MAX_ROLLOUT_DEPTH {
             moves.clear();
             cur_board
                 .random_reasonable_move_for_each_snake(&mut rng)
-                .map(|(sid, mv)| (sid, [mv]))
                 .collect_into(&mut moves);
 
-            let next_board = cur_board
-                .simulate_with_moves(&Instr, &moves)
-                .next()
-                .unwrap()
-                .1;
+            let next_board = cur_board.simulate_single_action(&Instr, &moves).1;
             cur_board = next_board;
             depth += 1;
         }

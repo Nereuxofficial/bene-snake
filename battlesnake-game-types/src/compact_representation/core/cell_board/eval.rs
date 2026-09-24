@@ -1,11 +1,11 @@
 use std::borrow::Borrow;
 
-use itertools::Itertools;
+use arrayvec::ArrayVec;
 use tracing::instrument;
 
 use crate::{
-    compact_representation::{core::dimensions::Dimensions, CellNum},
-    types::{self, HeadGettableGame, Move, SnakeId, N_MOVES},
+    compact_representation::{CellNum, core::dimensions::Dimensions},
+    types::{self, HeadGettableGame, Move, N_MOVES, SnakeId},
 };
 
 use super::{CellBoard, CellIndex};
@@ -181,7 +181,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
     where
         <Self as types::SnakeIDGettableGame>::SnakeIDType: 'a,
     {
-        let moves = moves.collect_vec();
+        let moves: ArrayVec<(SnakeId, Move), MAX_SNAKES> = moves.copied().collect();
         let mut new = *self;
 
         for (id, m) in moves.iter() {
@@ -248,24 +248,34 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
         }
 
         // Step 4e: Head to Head collisions
-        let grouped_heads = moves
+        let alive_heads: ArrayVec<_, MAX_SNAKES> = moves
             .iter()
             .map(|(id, m)| new_heads[id.as_usize()][m.as_index()])
             .filter_map(|result| result.to_alive_struct())
-            .into_group_map_by(|t| t.new_head);
-        let head_to_head_collistions = grouped_heads
-            .iter()
-            .filter(|(_key, values)| values.len() >= 2);
+            .collect();
 
-        for (head_to_head_collision_pos, snake_move_info) in head_to_head_collistions {
+        for (index, head) in alive_heads.iter().enumerate() {
+            if alive_heads[..index]
+                .iter()
+                .any(|earlier| earlier.new_head == head.new_head)
+            {
+                continue;
+            }
+            let snake_move_info: ArrayVec<_, MAX_SNAKES> = alive_heads
+                .iter()
+                .filter(|other| other.new_head == head.new_head)
+                .collect();
+            if snake_move_info.len() < 2 {
+                continue;
+            }
+            let head_to_head_collision_pos = head.new_head;
             let max_length = snake_move_info
                 .iter()
                 .map(|i| (*i, new.get_length(i.id)))
                 .max_by_key(|x| x.1)
                 .unwrap()
                 .1;
-            let snake_ids = snake_move_info.iter().map(|i| i.id).collect_vec();
-            let cell = new.get_cell(*head_to_head_collision_pos);
+            let cell = new.get_cell(head_to_head_collision_pos);
             // consider this board:
             //   s . . f . . s s s 3 s
             //   s s s . . . . s s . .
@@ -287,7 +297,9 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
             // snake 0 will be removed, causing the body to go in to an inconsistent state
             let head_to_head_collision_on_another_snake = cell.is_body_segment()
                 && !cell.is_head()
-                && !snake_ids.contains(&cell.get_snake_id().unwrap());
+                && !snake_move_info
+                    .iter()
+                    .any(|info| info.id == cell.get_snake_id().unwrap());
 
             let multiple_snakes_max_length = snake_move_info
                 .iter()
@@ -316,7 +328,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
             }
 
             if winner.is_none() && !head_to_head_collision_on_another_snake {
-                new.cell_remove(*head_to_head_collision_pos);
+                new.cell_remove(head_to_head_collision_pos);
             }
         }
 

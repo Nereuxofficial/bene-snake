@@ -1,11 +1,41 @@
 use std::{borrow::Borrow, time::Instant};
 
+use arrayvec::ArrayVec;
 use itertools::Itertools;
 use tracing::instrument;
 
-use crate::types::{Action, Move, SimulatorInstruments, SnakeId, N_MOVES};
+use crate::types::{Action, Move, N_MOVES, SimulatorInstruments, SnakeId};
 
-use super::{cell_board::EvaluateMode, dimensions::Dimensions, CellBoard, CellNum};
+use super::{CellBoard, CellNum, cell_board::EvaluateMode, dimensions::Dimensions};
+
+/// Simulate one chosen move per snake without building a Cartesian product.
+#[instrument(level = "trace", skip_all)]
+pub fn simulate_single_action<
+    I: SimulatorInstruments,
+    T: CellNum,
+    D: Dimensions,
+    const BOARD_SIZE: usize,
+    const MAX_SNAKES: usize,
+>(
+    board: &CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
+    instruments: &I,
+    moves: &[(SnakeId, Move)],
+    evaluate_mode: EvaluateMode,
+) -> (Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>) {
+    let start = Instant::now();
+    let selected: ArrayVec<_, MAX_SNAKES> = moves.iter().map(|(id, mv)| (*id, [*mv])).collect();
+    let states = board.generate_state(selected.iter(), evaluate_mode);
+    let action = Action::collect_from(moves.iter());
+    let game = board.evaluate_moves_with_state(moves.iter(), &states);
+    if !game.assert_consistency() {
+        panic!(
+            "caught an inconsistent simulate, moves: {:?} orig: {}, new: {}",
+            moves, board, game
+        );
+    }
+    instruments.observe_simulation(start.elapsed());
+    (action, game)
+}
 
 #[instrument(level = "trace", skip_all)]
 pub fn simulate_with_moves<

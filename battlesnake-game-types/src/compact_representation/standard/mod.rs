@@ -21,7 +21,7 @@ use crate::{
 
 use super::core::CellBoard as CCB;
 use super::core::CellIndex;
-use super::core::{EvaluateMode, simulate_with_moves};
+use super::core::{EvaluateMode, simulate_single_action, simulate_with_moves};
 use super::dimensions::{ArcadeMaze, Custom, Dimensions, Fixed, Square};
 
 /// A compact board representation that is significantly faster for simulation than
@@ -74,6 +74,17 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     /// Return an iterator over all the empty cells on the board
     pub fn get_all_empty(&self) -> impl Iterator<Item = CellIndex<T>> + '_ {
         self.embedded.get_empty_cells()
+    }
+
+    /// Simulate exactly one joint action without constructing an iterator.
+    pub fn simulate_single_action<I: SimulatorInstruments>(
+        &self,
+        instruments: &I,
+        moves: &[(SnakeId, Move)],
+    ) -> (Action<MAX_SNAKES>, Self) {
+        let (action, embedded) =
+            simulate_single_action(&self.embedded, instruments, moves, EvaluateMode::Standard);
+        (action, Self { embedded })
     }
 }
 
@@ -361,6 +372,77 @@ mod test {
             eprintln!("{}", compact);
         }
         assert!(compact.get_health(&SnakeId(0)) > 0);
+    }
+
+    #[test]
+    fn single_action_matches_general_simulator() {
+        let fixtures = [
+            (
+                "start_of_game",
+                include_str!("../../../fixtures/start_of_game.json"),
+            ),
+            (
+                "head_collision",
+                include_str!("../../../fixtures/tree_search_collision.json"),
+            ),
+            (
+                "body_collision",
+                include_str!("../../../fixtures/body_collision.json"),
+            ),
+            (
+                "forced_death",
+                include_str!("../../../fixtures/all-options-dead-prefer-out-of-bounds.json"),
+            ),
+            ("cornered", include_str!("../../../fixtures/cornered.json")),
+        ];
+        let instruments = Instruments;
+
+        for (name, fixture) in fixtures {
+            let game: DEGame = serde_json::from_str(fixture).expect("valid fixture");
+            let ids = build_snake_id_map(&game);
+            let snake_count = game.board.snakes.len();
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+
+            for moves in (0..snake_count)
+                .map(|index| {
+                    Move::all()
+                        .into_iter()
+                        .map(move |mv| (SnakeId(index as u8), mv))
+                })
+                .multi_cartesian_product()
+            {
+                let selections: Vec<_> = moves.iter().map(|(id, mv)| (*id, [*mv])).collect();
+                let expected = board
+                    .simulate_with_moves(&instruments, &selections)
+                    .next()
+                    .expect("one joint action");
+                let actual = board.simulate_single_action(&instruments, &moves);
+                assert_eq!(actual, expected, "fixture {name}, moves {moves:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn single_action_collision_and_forced_death_outcomes() {
+        let instruments = Instruments;
+        let game: DEGame =
+            serde_json::from_str(include_str!("../../../fixtures/tree_search_collision.json"))
+                .expect("valid fixture");
+        let ids = build_snake_id_map(&game);
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+        let (_, next) = board.simulate_single_action(
+            &instruments,
+            &[(SnakeId(0), Move::Right), (SnakeId(1), Move::Up)],
+        );
+        assert_eq!(next.get_health(&SnakeId(0)), 0);
+        assert!(next.get_health(&SnakeId(1)) > 0);
+
+        let game: DEGame = serde_json::from_str(include_str!("../../../fixtures/cornered.json"))
+            .expect("valid fixture");
+        let ids = build_snake_id_map(&game);
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+        let (_, next) = board.simulate_single_action(&instruments, &[(SnakeId(0), Move::Up)]);
+        assert_eq!(next.get_health(&SnakeId(0)), 0);
     }
 
     #[test]
