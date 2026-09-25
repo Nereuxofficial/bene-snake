@@ -442,8 +442,11 @@ pub trait HeadGettableGame: PositionGettableGame + SnakeIDGettableGame {
 
 /// A game for which the food on the board can be queries
 pub trait FoodGettableGame: PositionGettableGame + SnakeIDGettableGame {
-    /// get the head position for a given snake id, as a position struct (slow for simulation)
-    fn get_all_food_as_positions(&self) -> Vec<crate::wire_representation::Position>;
+    /// the collection used to hand back all food positions without allocating
+    type FoodPositions: IntoIterator<Item = crate::wire_representation::Position>;
+
+    /// get all food positions on the board
+    fn get_all_food_as_positions(&self) -> Self::FoodPositions;
 
     /// get the head position for a given snake as some "native" type for this game
     fn get_all_food_as_native_positions(&self) -> Vec<Self::NativePositionType>;

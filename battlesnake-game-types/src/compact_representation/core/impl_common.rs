@@ -62,7 +62,12 @@ macro_rules! impl_common_board_traits {
         impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
             FoodGettableGame for $type<T, D, BOARD_SIZE, MAX_SNAKES>
         {
-            fn get_all_food_as_positions(&self) -> Vec<$crate::wire_representation::Position> {
+            type FoodPositions =
+                arrayvec::ArrayVec<$crate::wire_representation::Position, BOARD_SIZE>;
+
+            fn get_all_food_as_positions(
+                &self,
+            ) -> arrayvec::ArrayVec<$crate::wire_representation::Position, BOARD_SIZE> {
                 self.embedded.get_all_food_as_positions()
             }
 

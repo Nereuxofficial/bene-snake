@@ -1,3 +1,5 @@
+use arrayvec::ArrayVec;
+
 use crate::{
     compact_representation::{
         core::{dimensions::Dimensions, CellIndex},
@@ -11,7 +13,11 @@ use super::CellBoard;
 impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> FoodGettableGame
     for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
-    fn get_all_food_as_positions(&self) -> Vec<crate::wire_representation::Position> {
+    type FoodPositions = ArrayVec<crate::wire_representation::Position, BOARD_SIZE>;
+
+    fn get_all_food_as_positions(
+        &self,
+    ) -> ArrayVec<crate::wire_representation::Position, BOARD_SIZE> {
         self.cells
             .iter()
             .enumerate()

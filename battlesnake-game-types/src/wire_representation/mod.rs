@@ -406,6 +406,8 @@ impl PositionGettableGame for Game {
 }
 
 impl FoodGettableGame for Game {
+    type FoodPositions = Vec<crate::wire_representation::Position>;
+
     fn get_all_food_as_positions(&self) -> Vec<crate::wire_representation::Position> {
         self.board.food.clone()
     }
