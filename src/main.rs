@@ -162,7 +162,6 @@ async fn main() -> color_eyre::Result<()> {
     info!("Starting battle-snake server on http://{addr}");
     let app = Router::new()
         .route("/", get(info))
-        .route("/rev", get(rev))
         .route("/move", post(get_move))
         .route("/info", get(info))
         .route("/start", post(start))
