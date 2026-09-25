@@ -26,7 +26,7 @@ image_name=$(docker compose config --images | head -1)
 built_image=$(docker image inspect --format '{{.Id}}' "$image_name" 2>/dev/null || true)
 if [[ ! -f "$state_dir/built-revision" ]] || [[ $(cat "$state_dir/built-revision") != "$revision" ]] ||
    [[ ! -f "$state_dir/built-image" ]] || [[ $(cat "$state_dir/built-image") != "$built_image" ]]; then
-    docker compose build bene-snake
+    docker compose build --build-arg "GIT_REVISION=$revision" bene-snake
     printf '%s\n' "$revision" > "$state_dir/built-revision"
     docker image inspect --format '{{.Id}}' "$image_name" > "$state_dir/built-image"
 fi

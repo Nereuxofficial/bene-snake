@@ -102,7 +102,7 @@ async fn get_move(body: String) -> Json<Value> {
 }
 
 async fn info() -> Json<Value> {
-    let rev = git_version!();
+    let rev = git_version!(fallback = env!("GIT_REVISION"));
     Json(json!({
         "apiversion": "1",
         "author": "Nereuxofficial",

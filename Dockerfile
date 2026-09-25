@@ -28,6 +28,8 @@ WORKDIR /bene-snake
 COPY ./ .
 COPY ./.env /.env
 
+ARG GIT_REVISION=unknown
+
 RUN case "$TARGETARCH" in \
     "amd64") RUST_TARGET="x86_64-unknown-linux-musl" ;; \
     "arm64") RUST_TARGET="aarch64-unknown-linux-musl" ;; \
