@@ -8,9 +8,7 @@ use std::{
 use alloc_tracker::{Allocator, Session};
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
-    types::{
-        Move, SimulableGame, SimulatorInstruments, SnakeId, YouDeterminableGame, build_snake_id_map,
-    },
+    types::{Move, SimulableGame, SnakeId, YouDeterminableGame, build_snake_id_map},
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -18,13 +16,6 @@ use lib::mcts::{Node, search_once};
 
 #[global_allocator]
 static ALLOCATOR: Allocator<System> = Allocator::system();
-
-#[derive(Debug)]
-struct Instruments;
-
-impl SimulatorInstruments for Instruments {
-    fn observe_simulation(&self, _: Duration) {}
-}
 
 fn start_board() -> CellBoard4Snakes11x11 {
     let fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
@@ -89,7 +80,7 @@ fn bench_simulate_allocations(c: &mut Criterion) {
             let start = Instant::now();
             let span = operation.measure_thread().iterations(iters);
             for _ in 0..iters {
-                black_box(board.simulate_with_moves(&Instruments, &moves).next());
+                black_box(board.simulate_with_moves(&moves).next());
             }
             drop(span);
             start.elapsed()

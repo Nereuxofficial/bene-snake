@@ -15,7 +15,7 @@ use std::fmt::Display;
 use tracing::instrument;
 
 use crate::{
-    types::{Move, SimulableGame, SimulatorInstruments},
+    types::{Move, SimulableGame},
     wire_representation::Position,
 };
 
@@ -77,13 +77,9 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     }
 
     /// Simulate exactly one joint action without constructing an iterator.
-    pub fn simulate_single_action<I: SimulatorInstruments>(
-        &self,
-        instruments: &I,
-        moves: &[(SnakeId, Move)],
-    ) -> (Action<MAX_SNAKES>, Self) {
+    pub fn simulate_single_action(&self, moves: &[(SnakeId, Move)]) -> (Action<MAX_SNAKES>, Self) {
         let (action, embedded) =
-            simulate_single_action(&self.embedded, instruments, moves, EvaluateMode::Standard);
+            simulate_single_action(&self.embedded, moves, EvaluateMode::Standard);
         (action, Self { embedded })
     }
 }
@@ -180,35 +176,25 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
     }
 }
 
-impl<
-    T: SimulatorInstruments,
-    D: Dimensions,
-    N: CN,
-    const BOARD_SIZE: usize,
-    const MAX_SNAKES: usize,
-> SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
+impl<D: Dimensions, N: CN, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
+    SimulableGame<MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
 {
     #[allow(clippy::type_complexity)]
     #[instrument(level = "trace", skip_all)]
     fn simulate_with_moves<S>(
         &self,
-        instruments: &T,
         snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, Self)> + '_>
     where
         S: Borrow<[Move]>,
     {
         Box::new(
-            simulate_with_moves(
-                &self.embedded,
-                instruments,
-                snake_ids_and_moves,
-                EvaluateMode::Standard,
-            )
-            .map(|v| {
-                let (action, board) = v;
-                (action, Self { embedded: board })
-            }),
+            simulate_with_moves(&self.embedded, snake_ids_and_moves, EvaluateMode::Standard).map(
+                |v| {
+                    let (action, board) = v;
+                    (action, Self { embedded: board })
+                },
+            ),
         )
     }
 }
@@ -340,11 +326,6 @@ mod test {
         compact_representation::core::Cell, game_fixture, types::build_snake_id_map,
         wire_representation::Game as DEGame,
     };
-    #[derive(Debug)]
-    struct Instruments;
-    impl SimulatorInstruments for Instruments {
-        fn observe_simulation(&self, _: std::time::Duration) {}
-    }
 
     #[test]
     fn test_compact_board_conversion() {
@@ -410,11 +391,10 @@ mod test {
             Move::Left,
             Move::Down,
         ];
-        let instruments = Instruments;
         eprintln!("{}", compact);
         for mv in moves {
             let res = compact
-                .simulate_with_moves(&instruments, &[(SnakeId(0), [mv].as_slice())])
+                .simulate_with_moves(&[(SnakeId(0), [mv].as_slice())])
                 .collect_vec();
             compact = res[0].1;
             eprintln!("{}", compact);
@@ -443,7 +423,6 @@ mod test {
             ),
             ("cornered", include_str!("../../../fixtures/cornered.json")),
         ];
-        let instruments = Instruments;
 
         for (name, fixture) in fixtures {
             let game: DEGame = serde_json::from_str(fixture).expect("valid fixture");
@@ -461,10 +440,10 @@ mod test {
             {
                 let selections: Vec<_> = moves.iter().map(|(id, mv)| (*id, [*mv])).collect();
                 let expected = board
-                    .simulate_with_moves(&instruments, &selections)
+                    .simulate_with_moves(&selections)
                     .next()
                     .expect("one joint action");
-                let actual = board.simulate_single_action(&instruments, &moves);
+                let actual = board.simulate_single_action(&moves);
                 assert_eq!(actual, expected, "fixture {name}, moves {moves:?}");
             }
         }
@@ -472,16 +451,13 @@ mod test {
 
     #[test]
     fn single_action_collision_and_forced_death_outcomes() {
-        let instruments = Instruments;
         let game: DEGame =
             serde_json::from_str(include_str!("../../../fixtures/tree_search_collision.json"))
                 .expect("valid fixture");
         let ids = build_snake_id_map(&game);
         let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
-        let (_, next) = board.simulate_single_action(
-            &instruments,
-            &[(SnakeId(0), Move::Right), (SnakeId(1), Move::Up)],
-        );
+        let (_, next) =
+            board.simulate_single_action(&[(SnakeId(0), Move::Right), (SnakeId(1), Move::Up)]);
         assert_eq!(next.get_health(&SnakeId(0)), 0);
         assert!(next.get_health(&SnakeId(1)) > 0);
 
@@ -489,7 +465,7 @@ mod test {
             .expect("valid fixture");
         let ids = build_snake_id_map(&game);
         let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
-        let (_, next) = board.simulate_single_action(&instruments, &[(SnakeId(0), Move::Up)]);
+        let (_, next) = board.simulate_single_action(&[(SnakeId(0), Move::Up)]);
         assert_eq!(next.get_health(&SnakeId(0)), 0);
     }
 

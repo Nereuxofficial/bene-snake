@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 use battlesnake_game_types::{
     compact_representation::StandardCellBoard4Snakes11x11,
     types::{
-        RandomReasonableMovesGame, SimulableGame, SimulatorInstruments, StandardFoodPlaceableGame,
-        VictorDeterminableGame,
+        RandomReasonableMovesGame, SimulableGame, StandardFoodPlaceableGame, VictorDeterminableGame,
     },
 };
 use itertools::Itertools;
@@ -12,16 +11,8 @@ use rand::{rngs::SmallRng, Rng, SeedableRng};
 use tracing_flame::FlameLayer;
 use tracing_subscriber::{fmt::Layer, prelude::*, Registry};
 
-#[derive(Debug)]
-struct Instruments {}
-
-impl SimulatorInstruments for Instruments {
-    fn observe_simulation(&self, _: std::time::Duration) {}
-}
-
 fn run_from_fixture_till_end(
     rng: &mut impl Rng,
-    instrument: Instruments,
     initial_game: StandardCellBoard4Snakes11x11,
 ) -> u64 {
     let mut iterations = 0;
@@ -34,7 +25,7 @@ fn run_from_fixture_till_end(
             .map(|(id, m)| (id, [m]));
 
         let new_game = game
-            .simulate_with_moves(&instrument, &next_move.collect_vec())
+            .simulate_with_moves(&next_move.collect_vec())
             .next()
             .unwrap()
             .1;
@@ -76,7 +67,7 @@ fn main() {
     let start = Instant::now();
 
     while start.elapsed() < runtime {
-        let length = run_from_fixture_till_end(&mut rng, Instruments {}, initial_game);
+        let length = run_from_fixture_till_end(&mut rng, initial_game);
         total_iterations += length;
         game_lengths.push(length);
     }

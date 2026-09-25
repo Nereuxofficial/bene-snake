@@ -1,28 +1,25 @@
-use std::{borrow::Borrow, time::Instant};
+use std::borrow::Borrow;
 
 use arrayvec::ArrayVec;
 use itertools::Itertools;
 use tracing::instrument;
 
-use crate::types::{Action, Move, N_MOVES, SimulatorInstruments, SnakeId};
+use crate::types::{Action, Move, N_MOVES, SnakeId};
 
 use super::{CellBoard, CellNum, cell_board::EvaluateMode, dimensions::Dimensions};
 
 /// Simulate one chosen move per snake without building a Cartesian product.
 #[instrument(level = "trace", skip_all)]
 pub fn simulate_single_action<
-    I: SimulatorInstruments,
     T: CellNum,
     D: Dimensions,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
     board: &CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    instruments: &I,
     moves: &[(SnakeId, Move)],
     evaluate_mode: EvaluateMode,
 ) -> (Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>) {
-    let start = Instant::now();
     let selected: ArrayVec<_, MAX_SNAKES> = moves.iter().map(|(id, mv)| (*id, [*mv])).collect();
     let states = board.generate_state(selected.iter(), evaluate_mode);
     let action = Action::collect_from(moves.iter());
@@ -33,7 +30,6 @@ pub fn simulate_single_action<
             moves, board, game
         );
     }
-    instruments.observe_simulation(start.elapsed());
     (action, game)
 }
 
@@ -41,22 +37,18 @@ pub fn simulate_single_action<
 pub fn simulate_with_moves<
     'a,
     S,
-    I: SimulatorInstruments,
     T: CellNum,
     D: Dimensions,
     const BOARD_SIZE: usize,
     const MAX_SNAKES: usize,
 >(
     board: &'a CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>,
-    instruments: &I,
     snake_ids_and_moves: &[(SnakeId, S)],
     evaluate_mode: EvaluateMode,
 ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>)> + 'a>
 where
     S: Borrow<[Move]>,
 {
-    let start = Instant::now();
-
     let mut snake_ids_we_are_simulating = [false; MAX_SNAKES];
     for (snake_id, _) in snake_ids_and_moves.iter() {
         snake_ids_we_are_simulating[snake_id.0.as_usize()] = true;
@@ -104,8 +96,5 @@ where
         }
         (action, game)
     });
-    let return_value = Box::new(results);
-    let end = Instant::now();
-    instruments.observe_simulation(end - start);
-    return_value
+    Box::new(results)
 }

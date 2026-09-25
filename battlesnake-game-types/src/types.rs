@@ -7,7 +7,6 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::hash::Hash;
-use std::time::Duration;
 
 /// Represents the snake IDs for a given game. This should be established once on the `/start` request and then
 /// stored, so that `SnakeIds` are stable throughout the game.
@@ -274,12 +273,6 @@ pub trait SnakeIDGettableGame {
     fn get_snake_ids(&self) -> Vec<Self::SnakeIDType>;
 }
 
-/// Instruments to be used with simulation
-pub trait SimulatorInstruments: std::fmt::Debug {
-    #[allow(missing_docs)]
-    fn observe_simulation(&self, duration: Duration);
-}
-
 /// A game for which "you" is determinable
 pub trait YouDeterminableGame: std::fmt::Debug + SnakeIDGettableGame {
     /// determines for a given game if a given snake id is you.
@@ -347,7 +340,7 @@ impl<const N_SNAKES: usize> Action<N_SNAKES> {
 }
 
 /// a game for which future states can be simulated
-pub trait SimulableGame<T: SimulatorInstruments, const N_SNAKES: usize>:
+pub trait SimulableGame<const N_SNAKES: usize>:
     std::fmt::Debug + Sized + SnakeIDGettableGame
 {
     /// simulates all possible future games for a given game returning the snake ids, moves that
@@ -355,21 +348,19 @@ pub trait SimulableGame<T: SimulatorInstruments, const N_SNAKES: usize>:
     #[allow(clippy::type_complexity)]
     fn simulate(
         &self,
-        instruments: &T,
         snake_ids: &[Self::SnakeIDType],
     ) -> Box<dyn Iterator<Item = (Action<N_SNAKES>, Self)> + '_> {
         let moves_to_simulate = Move::all();
         let build = snake_ids
             .iter()
             .map(|s| (s.clone(), moves_to_simulate.as_slice()));
-        self.simulate_with_moves(instruments, &build.into_iter().collect_vec())
+        self.simulate_with_moves(&build.into_iter().collect_vec())
     }
     /// simulates the next possible states for a game with a given set of snakes and moves, producing a list of the new games,
     /// along with the moves that got to that position
     #[allow(clippy::type_complexity)]
     fn simulate_with_moves<S>(
         &self,
-        instruments: &T,
         snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<N_SNAKES>, Self)> + '_>
     where

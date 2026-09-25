@@ -2,18 +2,11 @@ use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
         FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, Move,
-        NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
-        SnakeId,
+        NeighborDeterminableGame, ReasonableMovesGame, SimulableGame, SnakeId,
     },
 };
 
 use lib::Agent;
-
-#[derive(Debug)]
-struct Instr;
-impl SimulatorInstruments for Instr {
-    fn observe_simulation(&self, _: std::time::Duration) {}
-}
 
 /// A heuristic-based agent that uses simple rules to make decisions:
 /// - Avoid walls and other snakes
@@ -64,7 +57,7 @@ impl HeuristicAgent {
             })
             .collect();
 
-        let Some((_, next_board)) = board.simulate_with_moves(&Instr, &moves_for_sim).next() else {
+        let Some((_, next_board)) = board.simulate_with_moves(&moves_for_sim).next() else {
             return i32::MIN; // Move results in death
         };
 

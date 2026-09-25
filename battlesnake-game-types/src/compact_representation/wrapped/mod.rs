@@ -15,7 +15,7 @@ use std::error::Error;
 use std::fmt::Display;
 
 use crate::{
-    types::{Action, Move, SimulableGame, SimulatorInstruments},
+    types::{Action, Move, SimulableGame},
     wire_representation::Position,
 };
 
@@ -208,34 +208,24 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
     }
 }
 
-impl<
-    T: SimulatorInstruments,
-    N: CN,
-    D: Dimensions,
-    const BOARD_SIZE: usize,
-    const MAX_SNAKES: usize,
-> SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
+impl<D: Dimensions, N: CN, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
+    SimulableGame<MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
 {
     #[allow(clippy::type_complexity)]
     fn simulate_with_moves<S>(
         &self,
-        instruments: &T,
         snake_ids_and_moves: &[(Self::SnakeIDType, S)],
     ) -> Box<dyn Iterator<Item = (Action<MAX_SNAKES>, Self)> + '_>
     where
         S: Borrow<[Move]>,
     {
         Box::new(
-            simulate_with_moves(
-                &self.embedded,
-                instruments,
-                snake_ids_and_moves,
-                EvaluateMode::Wrapped,
-            )
-            .map(|v| {
-                let (action, board) = v;
-                (action, Self { embedded: board })
-            }),
+            simulate_with_moves(&self.embedded, snake_ids_and_moves, EvaluateMode::Wrapped).map(
+                |v| {
+                    let (action, board) = v;
+                    (action, Self { embedded: board })
+                },
+            ),
         )
     }
 }
@@ -284,20 +274,13 @@ mod test {
         game_fixture,
         types::{
             HeadGettableGame, HealthGettableGame, Move, NeighborDeterminableGame,
-            RandomReasonableMovesGame, ReasonableMovesGame, SimulableGame, SimulatorInstruments,
-            SnakeId, build_snake_id_map,
+            RandomReasonableMovesGame, ReasonableMovesGame, SimulableGame, SnakeId,
+            build_snake_id_map,
         },
         wire_representation::Position,
     };
 
     use super::{CellBoard4SnakesSquare11x11, CellIndex};
-
-    #[derive(Debug)]
-    struct Instruments {}
-
-    impl SimulatorInstruments for Instruments {
-        fn observe_simulation(&self, _: std::time::Duration) {}
-    }
 
     #[test]
     fn test_to_hash_round_trips() {
@@ -353,10 +336,9 @@ mod test {
             .map(|sid| (sid, [Move::Right].as_slice()))
             .collect_vec();
 
-        let instruments = Instruments {};
         let wrapped_for_down = orig_wrapped_cell
             .clone()
-            .simulate_with_moves(&instruments, &move_map)
+            .simulate_with_moves(&move_map)
             .next()
             .unwrap()
             .1;
@@ -395,7 +377,6 @@ mod test {
                 .collect_vec();
             wrapped = wrapped
                 .simulate_with_moves(
-                    &instruments,
                     &move_map
                         .iter()
                         .map(|(sid, mv)| (*sid, mv.as_slice()))
@@ -417,7 +398,6 @@ mod test {
         mv: Move,
     ) {
         let mut wrapped_cell = orig_wrapped_cell;
-        let instruments = Instruments {};
         let start_health = wrapped_cell.get_health(&SnakeId(0));
         let move_map = snake_ids.into_values().map(|sid| (sid, [mv])).collect_vec();
         let start_y = wrapped_cell.get_head_as_position(&SnakeId(0)).y;
@@ -425,7 +405,6 @@ mod test {
         for _ in 0..rollout {
             wrapped_cell = wrapped_cell
                 .simulate_with_moves(
-                    &instruments,
                     &move_map
                         .iter()
                         .map(|(sid, mv)| (*sid, mv.as_slice()))
@@ -454,7 +433,6 @@ mod test {
         let snake_ids = build_snake_id_map(&orig_crash_game);
         let compact_ids: Vec<SnakeId> = snake_ids.values().cloned().collect();
 
-        let instruments = Instruments {};
         {
             // this json fixture is the frame at which we crashed, and it comes from a deep forward simulation of orig_crash_game
             let json_hash = include_str!("../../../fixtures/crash_json_hash.json");
@@ -464,13 +442,13 @@ mod test {
             dbg!(&compact_ids);
             let snakes_and_moves = compact_ids.iter().map(|id| (*id, vec![Move::Up]));
             let mut results = game
-                .simulate_with_moves(&instruments, &snakes_and_moves.collect_vec())
+                .simulate_with_moves(&snakes_and_moves.collect_vec())
                 .collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();
             dbg!(mvs);
             g.assert_consistency();
-            g.simulate(&instruments, &compact_ids).for_each(drop);
+            g.simulate(&compact_ids).for_each(drop);
         }
 
         {
@@ -488,16 +466,13 @@ mod test {
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!1\n{}",
                 game
             );
-            let mut results = game
-                .simulate_with_moves(&instruments, &snakes_and_moves)
-                .collect_vec();
+            let mut results = game.simulate_with_moves(&snakes_and_moves).collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();
             dbg!(mvs);
             eprintln!("{}", g);
             g.assert_consistency();
-            g.simulate(&instruments, &compact_ids.clone())
-                .for_each(drop);
+            g.simulate(&compact_ids.clone()).for_each(drop);
         }
         {
             let snakes_and_moves = vec![
@@ -513,9 +488,7 @@ mod test {
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!1\n{}",
                 game
             );
-            let mut results = game
-                .simulate_with_moves(&instruments, &snakes_and_moves)
-                .collect_vec();
+            let mut results = game.simulate_with_moves(&snakes_and_moves).collect_vec();
             assert!(results.len() == 1);
             let (mvs, g) = results.pop().unwrap();
             dbg!(mvs);
@@ -524,7 +497,7 @@ mod test {
             assert_eq!(g.get_health(&SnakeId(0)), 0);
             assert_eq!(g.get_health(&SnakeId(1)), 0);
             g.assert_consistency();
-            g.simulate(&instruments, &compact_ids).for_each(drop);
+            g.simulate(&compact_ids).for_each(drop);
         }
     }
 

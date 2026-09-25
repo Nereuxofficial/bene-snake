@@ -10,8 +10,8 @@ use arrayvec::ArrayVec;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        Action, HealthGettableGame, Move, RandomReasonableMovesGame, ReasonableMovesGame,
-        SimulatorInstruments, SnakeId, VictorDeterminableGame,
+        Action, HealthGettableGame, Move, RandomReasonableMovesGame, ReasonableMovesGame, SnakeId,
+        VictorDeterminableGame,
     },
 };
 use rand::{Rng, seq::IndexedRandom};
@@ -30,13 +30,6 @@ pub struct Node {
     children: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
     visits: AtomicU32,
     own_moves: [MoveStats; 4],
-}
-
-#[derive(Debug)]
-struct Instr;
-
-impl SimulatorInstruments for Instr {
-    fn observe_simulation(&self, _: std::time::Duration) {}
 }
 
 impl Node {
@@ -129,7 +122,7 @@ impl Node {
             return (Some(Arc::clone(child)), child.board, false);
         }
 
-        let next_board = self.board.simulate_single_action(&Instr, action).1;
+        let next_board = self.board.simulate_single_action(action).1;
         let max_children = 3 + 2 * (self.visits.load(Ordering::Relaxed) as f64).sqrt() as usize;
         let mut children = self.children.lock().unwrap();
         if children.len() >= max_children {
@@ -164,7 +157,7 @@ fn rollout_from(mut board: CellBoard4Snakes11x11, you: &SnakeId) -> u32 {
         board
             .random_reasonable_move_for_each_snake(&mut rng)
             .collect_into(&mut moves);
-        board = board.simulate_single_action(&Instr, &moves).1;
+        board = board.simulate_single_action(&moves).1;
         depth += 1;
     }
 

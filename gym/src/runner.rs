@@ -3,8 +3,7 @@ use std::collections::VecDeque;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        ReasonableMovesGame, SimulableGame, SimulatorInstruments, SnakeId, VictorDeterminableGame,
-        build_snake_id_map,
+        ReasonableMovesGame, SimulableGame, SnakeId, VictorDeterminableGame, build_snake_id_map,
     },
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
@@ -13,12 +12,6 @@ use rand::seq::SliceRandom;
 
 use crate::stats::GameResult;
 use lib::Agent;
-
-#[derive(Debug)]
-struct Instr;
-impl SimulatorInstruments for Instr {
-    fn observe_simulation(&self, _: std::time::Duration) {}
-}
 
 /// Configuration for game generation
 #[derive(Clone, Debug)]
@@ -207,10 +200,8 @@ fn run_game_from_start(agents: &[&dyn Agent], config: &GameConfig, game: Game) -
         }
 
         // Simulate the turn
-        let next_board_opt: Option<CellBoard4Snakes11x11> = board
-            .simulate_with_moves(&Instr, &moves)
-            .next()
-            .map(|(_, b)| b);
+        let next_board_opt: Option<CellBoard4Snakes11x11> =
+            board.simulate_with_moves(&moves).next().map(|(_, b)| b);
 
         if let Some(next_board) = next_board_opt {
             board = next_board;
