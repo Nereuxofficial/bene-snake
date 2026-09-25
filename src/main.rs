@@ -9,6 +9,7 @@ use battlesnake_game_types::types::{
     Move, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame, build_snake_id_map,
 };
 use battlesnake_game_types::wire_representation::Game;
+use git_version::git_version;
 use lib::mcts::{Node, mcts_search};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -110,6 +111,13 @@ async fn info() -> Json<Value> {
     }))
 }
 
+async fn rev() -> Json<Value> {
+    let rev = git_version!();
+    Json(json!({
+        "rev": rev
+    }))
+}
+
 async fn end(body: String) -> Response {
     record_game_request();
     let game_state: Game = serde_json::from_str(&body).unwrap();
@@ -152,19 +160,20 @@ async fn main() -> color_eyre::Result<()> {
 
     tracing_subscriber::fmt().init();
 
-    info!("Starting battle-snake server...");
+    let addr = format!(
+        "0.0.0.0:{}",
+        std::env::var("PORT").expect("Please set the PORT environment variable")
+    );
+    info!("Starting battle-snake server on http://{addr}");
     let app = Router::new()
         .route("/", get(info))
+        .route("/rev", get(rev))
         .route("/move", post(get_move))
         .route("/info", get(info))
         .route("/start", post(start))
         .route("/end", post(end))
         .route("/deploy-ready", get(deploy_ready));
-    let listener = tokio::net::TcpListener::bind(format!(
-        "0.0.0.0:{}",
-        std::env::var("PORT").expect("Please set the PORT environment variable")
-    ))
-    .await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

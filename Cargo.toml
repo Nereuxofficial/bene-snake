@@ -24,6 +24,7 @@ colored = "3.1.1"
 itertools = "0.15.0"
 pprof = { version = "0.15.0", default-features = false }
 tracing-flame = "0.2.0"
+git-version = "0.3.9"
 
 [package]
 name = "bene-snake"
@@ -46,6 +47,7 @@ serde_json = { workspace = true }
 sentry = { workspace = true, features = ["backtrace", "contexts", "panic", "anyhow", "reqwest", "rustls", "debug-images"] }
 # Faster allocator
 mimalloc = { workspace = true }
+git-version = { workspace = true }
 
 [features]
 default = []
