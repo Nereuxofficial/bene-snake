@@ -102,18 +102,13 @@ async fn get_move(body: String) -> Json<Value> {
 }
 
 async fn info() -> Json<Value> {
+    let rev = git_version!();
     Json(json!({
         "apiversion": "1",
         "author": "Nereuxofficial",
         "color": "#FF5E5B",
         "head": "ferret",
         "tail": "curled",
-    }))
-}
-
-async fn rev() -> Json<Value> {
-    let rev = git_version!();
-    Json(json!({
         "rev": rev
     }))
 }
@@ -193,6 +188,27 @@ mod tests {
             Duration::from_millis(375)
         );
         assert_eq!(search_budget(40, Duration::ZERO), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn move_response_uses_lowercase_move_names() {
+        let body = include_str!("../lib/fixtures/turn33-food.json").to_string();
+        let game: Game = serde_json::from_str(&body).expect("valid fixture");
+        let snake_id_map = build_snake_id_map(&game);
+        GAME_STATES
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .insert(game.game.id.clone(), snake_id_map);
+
+        let Json(value) = get_move(body).await;
+        let mv = value
+            .get("move")
+            .and_then(Value::as_str)
+            .expect("response must contain a string move");
+        assert!(
+            ["up", "down", "left", "right"].contains(&mv),
+            "expected one of the four lowercase moves, got {mv:?}"
+        );
     }
 
     #[tokio::test]
