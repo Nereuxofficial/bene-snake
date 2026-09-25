@@ -154,7 +154,7 @@ impl Node {
 }
 
 fn rollout_from(mut board: CellBoard4Snakes11x11, you: &SnakeId) -> u32 {
-    const MAX_ROLLOUT_DEPTH: u32 = 100;
+    const MAX_ROLLOUT_DEPTH: u32 = 32;
     let mut rng = rand::rng();
     let mut moves = ArrayVec::<(SnakeId, Move), 4>::new();
     let mut depth = 0;
