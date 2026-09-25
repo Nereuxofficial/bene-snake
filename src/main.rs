@@ -22,7 +22,7 @@ pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock
 static LAST_GAME_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
 const DEPLOY_QUIET_PERIOD: Duration = Duration::from_secs(60);
 // Leave room for response serialization and the public network path.
-const RESPONSE_RESERVE: Duration = Duration::from_millis(50);
+const RESPONSE_RESERVE: Duration = Duration::from_millis(150);
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
