@@ -118,6 +118,7 @@ pub const N_MOVES: usize = 4;
 
 /// Represents a move
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
 pub enum Move {
     #[allow(missing_docs)]
     Left,
