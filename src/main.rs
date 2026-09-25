@@ -21,18 +21,31 @@ use tracing::{error, info};
 pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock::new();
 static LAST_GAME_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
 const DEPLOY_QUIET_PERIOD: Duration = Duration::from_secs(60);
+// Leave room for response serialization and the public network path.
+const RESPONSE_RESERVE: Duration = Duration::from_millis(50);
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-pub fn decode_state(text: String) -> color_eyre::Result<(CellBoard4Snakes11x11, u64)> {
+pub fn decode_state(text: String) -> color_eyre::Result<(CellBoard4Snakes11x11, i64)> {
     record_game_request();
     let game: Game = serde_json::from_str(&text)?;
     let binding = GAME_STATES.get().unwrap().lock();
     let snake_id_map = binding.get(&game.game.id).unwrap();
-    Ok((
-        game.as_cell_board(snake_id_map).unwrap(),
-        game.timeout - game.latency,
-    ))
+    Ok((game.as_cell_board(snake_id_map).unwrap(), game.game.timeout))
+}
+
+fn search_budget(game_timeout_ms: i64, elapsed: Duration) -> Duration {
+    Duration::from_millis(game_timeout_ms.max(0) as u64)
+        .saturating_sub(RESPONSE_RESERVE)
+        .saturating_sub(elapsed)
+}
+
+struct StopSearch(Arc<AtomicBool>);
+
+impl Drop for StopSearch {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 fn record_game_request() {
@@ -60,32 +73,27 @@ async fn deploy_ready() -> axum::http::StatusCode {
 async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
-    let (board, move_duration) = decode_state(body).unwrap();
+    let (board, game_timeout_ms) = decode_state(body).unwrap();
     let you = *board.you_id();
     let root_node = Arc::new(Node::new_root(board));
     let root_node_clone = root_node.clone();
-    let stop_bool = Arc::new(AtomicBool::new(false));
-    let stop_bool_ref = stop_bool.clone();
+    let stop = StopSearch(Arc::new(AtomicBool::new(false)));
+    let stop_for_search = Arc::clone(&stop.0);
     let task = tokio::task::spawn_blocking(move || {
-        mcts_search(root_node_clone, &you, stop_bool_ref);
+        mcts_search(root_node_clone, &you, stop_for_search);
     });
-    tokio::time::sleep(Duration::from_millis(move_duration)).await;
-    stop_bool.store(true, Ordering::Relaxed);
+    tokio::time::sleep(search_budget(game_timeout_ms, start.elapsed())).await;
+    drop(stop);
     let mut failed = false;
-    let chosen_move = root_node
-        .best_move(you)
-        .unwrap_or_else(|| {
-            failed = true;
-            info!("Could not get move in game!");
-            Move::Down
-        });
-    info!(
-        "Got move {chosen_move} in {:?} with depth {}",
-        start.elapsed(),
-        root_node.get_depth()
-    );
-    if let Err(e) = task.await
-        && failed
+    let chosen_move = root_node.best_move(you).unwrap_or_else(|| {
+        failed = true;
+        info!("Could not get move in game!");
+        Move::Down
+    });
+    info!("Got move {chosen_move} in {:?}", start.elapsed());
+    if failed
+        && task.is_finished()
+        && let Err(e) = task.await
     {
         error!("MCTS Search failed with: {e}");
     }
@@ -159,4 +167,48 @@ async fn main() -> color_eyre::Result<()> {
     .await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_budget_reserves_time_for_the_response() {
+        assert_eq!(
+            search_budget(500, Duration::ZERO),
+            Duration::from_millis(450)
+        );
+        assert_eq!(
+            search_budget(500, Duration::from_millis(75)),
+            Duration::from_millis(375)
+        );
+        assert_eq!(search_budget(40, Duration::ZERO), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_stops_its_blocking_worker() {
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
+        let request = tokio::spawn(async move {
+            let stop = StopSearch(Arc::new(AtomicBool::new(false)));
+            let worker_stop = Arc::clone(&stop.0);
+            tokio::task::spawn_blocking(move || {
+                while !worker_stop.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+                let _ = stopped_tx.send(());
+            });
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        ready_rx.await.unwrap();
+        request.abort();
+        let _ = request.await;
+        tokio::time::timeout(Duration::from_secs(1), stopped_rx)
+            .await
+            .expect("worker did not stop after request cancellation")
+            .unwrap();
+    }
 }
