@@ -29,6 +29,7 @@ COPY ./ .
 COPY ./.env /.env
 
 ARG GIT_REVISION=unknown
+ENV GIT_REVISION=${GIT_REVISION}
 
 RUN case "$TARGETARCH" in \
     "amd64") RUST_TARGET="x86_64-unknown-linux-musl" ;; \
@@ -45,6 +46,9 @@ RUN case "$TARGETARCH" in \
 ## Final image
 ####################################################################################################
 FROM debian:bookworm-slim
+
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=${GIT_REVISION}
 
 # Install the system trust store in the runtime image. The builder's CA files
 # are not a reliable substitute for a runtime-managed trust store in scratch.

@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_REVISION: ${GIT_REVISION:-unknown}
     container_name: bene-snake
     ports:
       - "${PORT:-8000}:8000"

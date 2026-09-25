@@ -26,7 +26,12 @@ image_name=$(docker compose config --images | head -1)
 built_image=$(docker image inspect --format '{{.Id}}' "$image_name" 2>/dev/null || true)
 if [[ ! -f "$state_dir/built-revision" ]] || [[ $(cat "$state_dir/built-revision") != "$revision" ]] ||
    [[ ! -f "$state_dir/built-image" ]] || [[ $(cat "$state_dir/built-image") != "$built_image" ]]; then
-    docker compose build --build-arg "GIT_REVISION=$revision" bene-snake
+    GIT_REVISION="$revision" docker compose build bene-snake
+    image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_name")
+    if [[ "$image_revision" != "$revision" ]]; then
+        echo "Built image revision $image_revision does not match $revision" >&2
+        exit 1
+    fi
     printf '%s\n' "$revision" > "$state_dir/built-revision"
     docker image inspect --format '{{.Id}}' "$image_name" > "$state_dir/built-image"
 fi
@@ -49,15 +54,18 @@ docker tag "$previous_image" bene-snake:rollback
 docker compose up -d --no-deps --no-build bene-snake
 
 for _ in {1..15}; do
-    if curl --silent --fail --output /dev/null --max-time 2 "http://127.0.0.1:$port/"; then
-        printf '%s\n' "$revision" > "$state_dir/deployed-revision"
-        echo "Deployed $revision"
-        exit 0
+    if response=$(curl --silent --fail --max-time 2 "http://127.0.0.1:$port/"); then
+        reported_revision=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("rev", ""))' <<< "$response" 2>/dev/null || true)
+        if [[ "$reported_revision" == "$revision" ]]; then
+            printf '%s\n' "$revision" > "$state_dir/deployed-revision"
+            echo "Deployed $revision"
+            exit 0
+        fi
     fi
     sleep 2
 done
 
-echo 'New container failed its HTTP check; restoring the previous image' >&2
+echo 'New container failed its revision check; restoring the previous image' >&2
 docker tag bene-snake:rollback "$image_name"
 docker compose up -d --no-deps --no-build --force-recreate bene-snake
 exit 1
