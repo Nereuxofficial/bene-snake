@@ -3,8 +3,8 @@ use std::error::Error;
 use std::slice::Iter;
 
 use itertools::Itertools;
-use rand::seq::IteratorRandom;
 use rand::RngExt;
+use rand::seq::IteratorRandom;
 
 use crate::types::EmptyCellGettableGame;
 use crate::types::SnakeIDMap;
@@ -13,10 +13,10 @@ use crate::types::StandardFoodPlaceableGame;
 use crate::wire_representation::Game;
 use crate::wire_representation::Position;
 
-use super::dimensions::Dimensions;
 use super::Cell;
 use super::CellIndex;
 use super::CellNum as CN;
+use super::dimensions::Dimensions;
 use super::{DOUBLE_STACK, TRIPLE_STACK};
 
 mod eval;
@@ -74,6 +74,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
 
     /// Asserts that all tails eventually loop back to a head and panics if the board is inconsistent
     pub fn assert_consistency(&self) -> bool {
+        #[cfg(debug_assertions)]
         for i in 0..MAX_SNAKES {
             let snake_id = SnakeId(i as u8);
             let health = self.healths[i];
