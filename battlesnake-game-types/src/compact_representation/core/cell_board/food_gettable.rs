@@ -2,8 +2,8 @@ use arrayvec::ArrayVec;
 
 use crate::{
     compact_representation::{
-        core::{dimensions::Dimensions, CellIndex},
         CellNum,
+        core::{CellIndex, dimensions::Dimensions},
     },
     types::FoodGettableGame,
 };

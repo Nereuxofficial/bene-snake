@@ -12,7 +12,7 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::mcts::{Node, search_once};
+use lib::mcts::{Node, SearchDepthStats, search_once};
 
 #[global_allocator]
 static ALLOCATOR: Allocator<System> = Allocator::system();
@@ -28,6 +28,7 @@ fn bench_rollout_allocations(c: &mut Criterion) {
     let board = start_board();
     let you = *board.you_id();
     let node = Arc::new(Node::new_root(board));
+    let mut rollout_stats = SearchDepthStats::default();
     let session = Session::new();
     let operation = session.operation("rollout");
 
@@ -36,7 +37,7 @@ fn bench_rollout_allocations(c: &mut Criterion) {
             let start = Instant::now();
             let span = operation.measure_thread().iterations(iters);
             for _ in 0..iters {
-                black_box(Arc::clone(&node).rollout(black_box(&you)));
+                black_box(Arc::clone(&node).rollout(black_box(&you), &mut rollout_stats));
             }
             drop(span);
             start.elapsed()
@@ -49,6 +50,7 @@ fn bench_expand_allocations(c: &mut Criterion) {
     let you = *board.you_id();
     let session = Session::new();
     let operation = session.operation("node_create_and_expand");
+    let mut search_stats = SearchDepthStats::default();
 
     c.bench_function("allocations/node_create_and_expand", |b| {
         b.iter_custom(|iters| {
@@ -56,7 +58,7 @@ fn bench_expand_allocations(c: &mut Criterion) {
             let span = operation.measure_thread().iterations(iters);
             for _ in 0..iters {
                 let root = Arc::new(Node::new_root(board));
-                search_once(&root, black_box(&you));
+                search_once(&root, black_box(&you), &mut search_stats);
             }
             drop(span);
             start.elapsed()

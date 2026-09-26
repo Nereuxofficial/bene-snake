@@ -13,7 +13,7 @@ use battlesnake_game_types::{
 };
 use lib::{
     eval::evaluate_board,
-    mcts::{Node, search_once},
+    mcts::{Node, SearchDepthStats, search_once},
 };
 
 #[global_allocator]
@@ -59,22 +59,24 @@ fn probe() {
     let board = start_board();
     let you = *board.you_id();
     let root = Arc::new(Node::new_root(board));
+    let mut rollout_stats = SearchDepthStats::default();
+    let mut search_stats = SearchDepthStats::default();
 
     measure("node_new_root", 1000, || {
         black_box(Arc::new(Node::new_root(black_box(board))));
     });
 
     measure("rollout", 1000, || {
-        black_box(Arc::clone(&root).rollout(black_box(&you)));
+        black_box(Arc::clone(&root).rollout(black_box(&you), &mut rollout_stats));
     });
 
     measure("search_once_same_root", 1000, || {
-        search_once(&root, black_box(&you));
+        search_once(&root, black_box(&you), &mut search_stats);
     });
 
     measure("search_once_fresh_root", 500, || {
         let r = Arc::new(Node::new_root(board));
-        search_once(&r, black_box(&you));
+        search_once(&r, black_box(&you), &mut search_stats);
     });
 
     let hungry = hungry_board();

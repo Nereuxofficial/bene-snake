@@ -14,6 +14,16 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
 
 /// Lightweight evaluation function optimized for MCTS
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
+    evaluate_board_with_length_weight(cellboard, you, 15)
+}
+
+/// Evaluate a board while varying the score assigned to each unit of snake length.
+/// All other terms match [`evaluate_board`]. This is exposed for offline tuning.
+pub fn evaluate_board_with_length_weight(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    length_weight: i32,
+) -> u16 {
     // Check if we're dead - return worst score
     if cellboard.get_health(you) == 0 {
         return 0;
@@ -31,11 +41,11 @@ pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
 
     // 2. Length advantage (longer is better)
     let my_length = cellboard.get_length(you) as i32;
-    score += my_length * 15;
+    score += my_length * length_weight;
 
     // 3. Immediate mobility (number of valid moves from head) - fast approximation of space
     let head_native = cellboard.get_head_as_native_position(you);
-    let immediate_moves = cellboard.neighbors(&head_native).count() as i32;
+    let immediate_moves = cellboard.free_neighbors(head_native).count() as i32;
     score += immediate_moves * 25; // This is our proxy for area control
 
     // 4. Food distance when hungry (simplified)

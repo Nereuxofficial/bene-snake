@@ -82,6 +82,32 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
             simulate_single_action(&self.embedded, moves, EvaluateMode::Standard);
         (action, Self { embedded })
     }
+
+    /// Return the surrounding fields not immediately blocked
+    pub fn free_neighbors<'a>(
+        &'a self,
+        pos: CellIndex<u8>,
+    ) -> Box<dyn Iterator<Item = CellIndex<T>> + 'a> {
+        let width = self.embedded.get_actual_width();
+        let head_pos = pos.into_position(width);
+
+        Box::new(
+            Move::all_iter()
+                .map(move |mv| {
+                    let new_head = head_pos.add_vec(mv.to_vector());
+                    let ci = CellIndex::new(new_head, width);
+
+                    (new_head, ci)
+                })
+                .filter(move |(new_head, ci)| {
+                    !self.off_board(*new_head)
+                        && (!self.embedded.cell_is_body(*ci)
+                            || self.embedded.cell_is_single_tail(*ci))
+                        && !self.embedded.cell_is_snake_head(*ci)
+                })
+                .map(|(_, ci)| ci),
+        )
+    }
 }
 
 /// Uniformly chooses one of the legal moves encoded in `legal_mask`, where bit

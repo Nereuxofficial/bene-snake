@@ -6,7 +6,7 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::mcts::Node;
+use lib::mcts::{Node, SearchDepthStats};
 
 fn board(fixture: &str) -> CellBoard4Snakes11x11 {
     let game: Game = serde_json::from_str(fixture).expect("valid game fixture");
@@ -29,8 +29,9 @@ fn bench_rollout(c: &mut Criterion) {
         let board = board(fixture);
         let you = *board.you_id();
         let node = Arc::new(Node::new_root(board));
+        let mut stats = SearchDepthStats::default();
         group.bench_function(name, |b| {
-            b.iter(|| black_box(Arc::clone(&node).rollout(black_box(&you))))
+            b.iter(|| black_box(Arc::clone(&node).rollout(black_box(&you), &mut stats)))
         });
     }
     group.finish();

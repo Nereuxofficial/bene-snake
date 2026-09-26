@@ -17,6 +17,19 @@ use battlesnake_game_types::{
 use rand::{Rng, seq::IndexedRandom};
 
 use crate::eval::evaluate_board;
+use tracing::info;
+
+const MAX_ROLLOUT_DEPTH: u32 = 32;
+const MAX_TREE_DEPTH: usize = 64;
+
+#[derive(Default)]
+pub struct SearchDepthStats {
+    pub iterations: u64,
+    pub max_tree_depth: usize,
+    pub tree_depth_limit_hits: u64,
+    pub max_rollout_depth: u32,
+    pub rollout_depth_limit_hits: u64,
+}
 
 #[derive(Default)]
 struct MoveStats {
@@ -141,13 +154,16 @@ impl Node {
         self.visits.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn rollout(&self, you: &SnakeId) -> u32 {
-        rollout_from(self.board, you)
+    pub fn rollout(&self, you: &SnakeId, stats: &mut SearchDepthStats) -> u32 {
+        rollout_from(self.board, you, stats)
     }
 }
 
-fn rollout_from(mut board: CellBoard4Snakes11x11, you: &SnakeId) -> u32 {
-    const MAX_ROLLOUT_DEPTH: u32 = 32;
+fn rollout_from(
+    mut board: CellBoard4Snakes11x11,
+    you: &SnakeId,
+    stats: &mut SearchDepthStats,
+) -> u32 {
     let mut rng = rand::rng();
     let mut moves = ArrayVec::<(SnakeId, Move), 4>::new();
     let mut depth = 0;
@@ -161,29 +177,40 @@ fn rollout_from(mut board: CellBoard4Snakes11x11, you: &SnakeId) -> u32 {
         depth += 1;
     }
 
+    stats.max_rollout_depth = stats.max_rollout_depth.max(depth);
+    if depth == MAX_ROLLOUT_DEPTH && !board.is_over() && board.get_health(you) > 0 {
+        stats.rollout_depth_limit_hits += 1;
+    }
+
     if board.get_health(you) == 0 {
         0
     } else if board.is_over() && board.get_winner().is_some_and(|winner| winner == *you) {
-        1000
-    } else if board.is_over() {
-        0
+        u32::MAX
     } else {
-        evaluate_board(&board, you).min(1000) as u32
+        evaluate_board(&board, you) as u32
     }
 }
 
-fn search_iteration(root: &Arc<Node>, you: &SnakeId, rng: &mut impl Rng) {
+fn search_iteration(
+    root: &Arc<Node>,
+    you: &SnakeId,
+    rng: &mut impl Rng,
+    stats: &mut SearchDepthStats,
+) {
     const EXPLORATION: f64 = 1.0;
-    const MAX_TREE_DEPTH: usize = 64;
+    stats.iterations += 1;
     let mut path = Vec::with_capacity(16);
     let mut node = Arc::clone(root);
     let result = loop {
-        if node.board.is_over() || node.board.get_health(you) == 0 || path.len() == MAX_TREE_DEPTH {
-            break node.rollout(you);
+        if node.board.is_over() || node.board.get_health(you) == 0 {
+            break node.rollout(you, stats);
         }
-
+        if path.len() == MAX_TREE_DEPTH {
+            stats.tree_depth_limit_hits += 1;
+            break node.rollout(you, stats);
+        }
         let Some(own_move) = node.select_own_move(*you, EXPLORATION) else {
-            break node.rollout(you);
+            break node.rollout(you, stats);
         };
         let action = node.sample_joint_action(*you, own_move, rng);
         let (child, next_board, newly_expanded) = node.child_for_action(&action);
@@ -191,25 +218,41 @@ fn search_iteration(root: &Arc<Node>, you: &SnakeId, rng: &mut impl Rng) {
 
         match child {
             Some(next) if !newly_expanded => node = next,
-            _ => break rollout_from(next_board, you),
+            _ => break rollout_from(next_board, you, stats),
         }
     };
 
+    stats.max_tree_depth = stats.max_tree_depth.max(path.len());
     for (visited, own_move) in path {
         visited.record(own_move, result);
     }
 }
 
 /// Perform one search iteration, mainly useful for profiling the search.
-pub fn search_once(root: &Arc<Node>, you: &SnakeId) {
-    search_iteration(root, you, &mut rand::rng());
+pub fn search_once(root: &Arc<Node>, you: &SnakeId, stats: &mut SearchDepthStats) {
+    search_iteration(root, you, &mut rand::rng(), stats);
 }
 
 pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
     let mut rng = rand::rng();
+    let mut stats = SearchDepthStats::default();
     while !stop.load(Ordering::Relaxed) {
-        search_iteration(&root, you, &mut rng);
+        search_iteration(&root, you, &mut rng, &mut stats);
     }
+    info!(
+        iterations = stats.iterations,
+        max_tree_depth = MAX_TREE_DEPTH,
+        observed_max_tree_depth = stats.max_tree_depth,
+        max_tree_depth_reached = stats.max_tree_depth == MAX_TREE_DEPTH,
+        tree_depth_cap_truncated_search = stats.tree_depth_limit_hits > 0,
+        tree_depth_limit_hits = stats.tree_depth_limit_hits,
+        max_rollout_depth = MAX_ROLLOUT_DEPTH,
+        observed_max_rollout_depth = stats.max_rollout_depth,
+        max_rollout_depth_reached = stats.max_rollout_depth == MAX_ROLLOUT_DEPTH,
+        rollout_depth_cap_truncated_search = stats.rollout_depth_limit_hits > 0,
+        rollout_depth_limit_hits = stats.rollout_depth_limit_hits,
+        "MCTS search depth telemetry"
+    );
 }
 
 #[cfg(test)]

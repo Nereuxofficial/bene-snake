@@ -12,7 +12,7 @@ use battlesnake_game_types::{
 };
 use lib::{
     eval::evaluate_board,
-    mcts::{Node, search_once},
+    mcts::{Node, SearchDepthStats, search_once},
 };
 
 fn start_board() -> CellBoard4Snakes11x11 {
@@ -90,11 +90,13 @@ fn timing_probe() {
     });
 
     let root = Arc::new(Node::new_root(board));
+    let mut rollout_stats = SearchDepthStats::default();
     timeit("rollout", 200_000, || {
-        black_box(Arc::clone(&root).rollout(black_box(&you)));
+        black_box(Arc::clone(&root).rollout(black_box(&you), &mut rollout_stats));
     });
 
+    let mut search_stats = SearchDepthStats::default();
     timeit("search_once (tree grows)", 50_000, || {
-        search_once(&root, black_box(&you));
+        search_once(&root, black_box(&you), &mut search_stats);
     });
 }

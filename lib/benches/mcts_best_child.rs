@@ -6,7 +6,7 @@ use battlesnake_game_types::{
     wire_representation::Game,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::mcts::{Node, search_once};
+use lib::mcts::{Node, SearchDepthStats, search_once};
 
 fn root_after_iterations(iterations: usize) -> Arc<Node> {
     let fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
@@ -15,9 +15,10 @@ fn root_after_iterations(iterations: usize) -> Arc<Node> {
     let board: CellBoard4Snakes11x11 = game.as_cell_board(&snake_ids).expect("compact board");
     let you = *board.you_id();
     let root = Arc::new(Node::new_root(board));
+    let mut stats = SearchDepthStats::default();
 
     for _ in 0..iterations {
-        search_once(&root, &you);
+        search_once(&root, &you, &mut stats);
     }
     root
 }
