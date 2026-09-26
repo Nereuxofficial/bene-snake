@@ -25,6 +25,10 @@ docker-build TAG="latest":
 gym *ARGS:
     cargo run --release --package gym -- {{ARGS}}
 
+# Evaluate scoring-function variants against the downloaded replay positions
+bench-scoring *ARGS:
+    RUSTC_WRAPPER= cargo run --release --package lib --example evaluation_score_benchmark -- {{ARGS}}
+
 # Run the focused timing suite (optional arguments go to Criterion)
 bench *ARGS:
     cargo bench --package lib --bench mcts_rollout --bench mcts_expand --bench mcts_best_child -- {{ARGS}}

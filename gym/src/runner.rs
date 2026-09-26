@@ -3,12 +3,13 @@ use std::collections::VecDeque;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        ReasonableMovesGame, SimulableGame, SnakeId, VictorDeterminableGame, build_snake_id_map,
+        ReasonableMovesGame, SimulableGame, SnakeId, StandardFoodPlaceableGame,
+        VictorDeterminableGame, build_snake_id_map,
     },
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
-use rand::{Rng, RngExt, SeedableRng, rngs::SmallRng};
 use rand::seq::SliceRandom;
+use rand::{Rng, RngExt, SeedableRng, rngs::SmallRng};
 
 use crate::stats::GameResult;
 use lib::Agent;
@@ -65,7 +66,6 @@ pub fn generate_random_game_with_seed(config: &GameConfig, seed: u64) -> Game {
 }
 
 fn generate_random_game_with_rng(config: &GameConfig, rng: &mut impl Rng) -> Game {
-
     // Standard starting positions for snakes (corners and edges)
     let standard_positions = vec![
         Position::new(1, 1),
@@ -151,14 +151,23 @@ fn generate_random_game_with_rng(config: &GameConfig, rng: &mut impl Rng) -> Gam
 
 /// Runs a single game with the given agents
 pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
-    run_game_from_start(agents, config, generate_random_game(config))
+    let mut rng = rand::rng();
+    let game = generate_random_game_with_rng(config, &mut rng);
+    run_game_from_start(agents, config, game, &mut rng)
 }
 
 pub fn run_game_seeded(agents: &[&dyn Agent], config: &GameConfig, seed: u64) -> GameResult {
-    run_game_from_start(agents, config, generate_random_game_with_seed(config, seed))
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let game = generate_random_game_with_rng(config, &mut rng);
+    run_game_from_start(agents, config, game, &mut rng)
 }
 
-fn run_game_from_start(agents: &[&dyn Agent], config: &GameConfig, game: Game) -> GameResult {
+fn run_game_from_start(
+    agents: &[&dyn Agent],
+    config: &GameConfig,
+    game: Game,
+    rng: &mut impl Rng,
+) -> GameResult {
     assert!(
         agents.len() >= config.num_snakes,
         "Need at least {} agents for {} snakes",
@@ -203,7 +212,8 @@ fn run_game_from_start(agents: &[&dyn Agent], config: &GameConfig, game: Game) -
         let next_board_opt: Option<CellBoard4Snakes11x11> =
             board.simulate_with_moves(&moves).next().map(|(_, b)| b);
 
-        if let Some(next_board) = next_board_opt {
+        if let Some(mut next_board) = next_board_opt {
+            next_board.place_food(rng);
             board = next_board;
         } else {
             break;
@@ -248,6 +258,43 @@ pub fn run_tournament_parallel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use battlesnake_game_types::types::{FoodGettableGame, Move};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct EatThenObserve {
+        calls: AtomicUsize,
+        saw_replacement: AtomicBool,
+    }
+
+    impl Agent for EatThenObserve {
+        fn name(&self) -> &str {
+            "eat-then-observe"
+        }
+
+        fn choose_move(&self, board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Move::Right
+            } else {
+                self.saw_replacement.store(
+                    !board.get_all_food_as_positions().is_empty(),
+                    Ordering::Relaxed,
+                );
+                Move::Up
+            }
+        }
+    }
+
+    struct MoveLeft;
+
+    impl Agent for MoveLeft {
+        fn name(&self) -> &str {
+            "move-left"
+        }
+
+        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
+            Move::Left
+        }
+    }
 
     #[test]
     fn seeded_starts_reproduce_the_same_board() {
@@ -256,5 +303,24 @@ mod tests {
             generate_random_game_with_seed(&config, 20260924),
             generate_random_game_with_seed(&config, 20260924)
         );
+    }
+
+    #[test]
+    fn replenishes_food_after_the_last_piece_is_eaten() {
+        let config = GameConfig {
+            max_turns: 2,
+            ..GameConfig::duel()
+        };
+        let mut game = generate_random_game_with_seed(&config, 20260926);
+        let head = game.board.snakes[0].head;
+        game.board.food = vec![Position::new(head.x + 1, head.y)];
+        let eater = EatThenObserve {
+            calls: AtomicUsize::new(0),
+            saw_replacement: AtomicBool::new(false),
+        };
+        let mut rng = SmallRng::seed_from_u64(20260926);
+        run_game_from_start(&[&eater, &MoveLeft], &config, game, &mut rng);
+        assert!(eater.calls.load(Ordering::Relaxed) >= 2);
+        assert!(eater.saw_replacement.load(Ordering::Relaxed));
     }
 }

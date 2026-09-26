@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 const DEFAULT_INPUT: &str = "experiments/nereuxofficial-positions.jsonl";
 const DEFAULT_OUTPUT: &str = "experiments/evaluation-score-benchmark.csv";
-const DEFAULT_WEIGHTS: &[i32] = &[0, 5, 10, 15, 20, 30, 45];
+const DEFAULT_WEIGHTS: &[i32] = &[0, 1, 2, 3, 4, 5, 10];
 
 struct Options {
     input: PathBuf,

@@ -1,9 +1,6 @@
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
-    types::{
-        FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame,
-        NeighborDeterminableGame, SnakeId,
-    },
+    types::{FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, SnakeId},
     wire_representation::Position,
 };
 
@@ -14,7 +11,7 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
 
 /// Lightweight evaluation function optimized for MCTS
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
-    evaluate_board_with_length_weight(cellboard, you, 15)
+    evaluate_board_with_length_weight(cellboard, you, 3)
 }
 
 /// Evaluate a board while varying the score assigned to each unit of snake length.
