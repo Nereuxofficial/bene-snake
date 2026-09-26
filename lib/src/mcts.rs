@@ -19,7 +19,7 @@ use rand::{Rng, seq::IndexedRandom};
 use crate::eval::evaluate_board;
 use tracing::info;
 
-const MAX_ROLLOUT_DEPTH: u32 = 32;
+const MAX_ROLLOUT_DEPTH: u32 = 64;
 const MAX_TREE_DEPTH: usize = 64;
 // Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
 const WIN_REWARD: u32 = 1000;
@@ -92,8 +92,8 @@ impl Node {
                 if visits == 0.0 {
                     return f64::INFINITY;
                 }
-                let mean = stats.reward.load(Ordering::Relaxed) as f64
-                    / (visits * f64::from(WIN_REWARD));
+                let mean =
+                    stats.reward.load(Ordering::Relaxed) as f64 / (visits * f64::from(WIN_REWARD));
                 mean + exploration * ((parent_visits + 1.0).ln() / visits).sqrt()
             };
             value(left).total_cmp(&value(right))
@@ -315,15 +315,21 @@ mod tests {
 
     #[test]
     fn rollout_uses_terminal_rewards_for_winner_and_dead_snake() {
-        let mut game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
-            .unwrap();
+        let mut game: Game =
+            serde_json::from_str(include_str!("../fixtures/turn33-food.json")).unwrap();
         game.board.snakes.retain(|snake| snake.id == game.you.id);
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).unwrap();
         let you = ids[&game.you.id];
         let node = Node::new_root(board);
-        assert_eq!(node.rollout(&you, &mut SearchDepthStats::default()), WIN_REWARD);
-        assert_eq!(node.rollout(&SnakeId(3), &mut SearchDepthStats::default()), 0);
+        assert_eq!(
+            node.rollout(&you, &mut SearchDepthStats::default()),
+            WIN_REWARD
+        );
+        assert_eq!(
+            node.rollout(&SnakeId(3), &mut SearchDepthStats::default()),
+            0
+        );
     }
 
     #[test]
