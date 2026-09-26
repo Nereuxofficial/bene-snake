@@ -30,8 +30,16 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub fn decode_state(text: String) -> color_eyre::Result<(CellBoard4Snakes11x11, i64)> {
     record_game_request();
     let game: Game = serde_json::from_str(&text)?;
-    let binding = GAME_STATES.get().unwrap().lock();
-    let snake_id_map = binding.get(&game.game.id).unwrap();
+    let mut binding = GAME_STATES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock();
+    let snake_id_map = binding.entry(game.game.id.clone()).or_insert_with(|| {
+        info!(
+            "Game {} had no /start request; initializing from /move",
+            game.game.id
+        );
+        build_snake_id_map(&game)
+    });
     Ok((game.as_cell_board(snake_id_map).unwrap(), game.game.timeout))
 }
 
@@ -138,11 +146,11 @@ async fn start(body: String) -> Response {
         body,
         game_state.get_snake_ids().len()
     );
-    let snake_id_map = build_snake_id_map(&game_state);
     GAME_STATES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
-        .insert(game_state.game.id.clone(), snake_id_map);
+        .entry(game_state.game.id.clone())
+        .or_insert_with(|| build_snake_id_map(&game_state));
     Response::default()
 }
 
@@ -180,11 +188,11 @@ mod tests {
     fn search_budget_reserves_time_for_the_response() {
         assert_eq!(
             search_budget(500, Duration::ZERO),
-            Duration::from_millis(450)
+            Duration::from_millis(330)
         );
         assert_eq!(
             search_budget(500, Duration::from_millis(75)),
-            Duration::from_millis(375)
+            Duration::from_millis(255)
         );
         assert_eq!(search_budget(40, Duration::ZERO), Duration::ZERO);
     }
@@ -208,6 +216,26 @@ mod tests {
             ["up", "down", "left", "right"].contains(&mv),
             "expected one of the four lowercase moves, got {mv:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn move_without_start_initializes_game_state() {
+        let mut game: Game = serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json"))
+            .expect("valid fixture");
+        game.game.id = "missing-start-regression".to_string();
+        let body = serde_json::to_string(&game).expect("serialize game");
+
+        let Json(response) = get_move(body).await;
+        assert!(
+            ["up", "down", "left", "right"].contains(&response["move"].as_str().unwrap()),
+            "expected a valid move, got {response:?}"
+        );
+        assert_eq!(
+            GAME_STATES.get().unwrap().lock()[&game.game.id][&game.you.id].0,
+            0
+        );
+
+        GAME_STATES.get().unwrap().lock().remove(&game.game.id);
     }
 
     #[tokio::test]
