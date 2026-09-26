@@ -21,6 +21,15 @@ use tracing::info;
 
 const MAX_ROLLOUT_DEPTH: u32 = 32;
 const MAX_TREE_DEPTH: usize = 64;
+// Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
+const WIN_REWARD: u32 = 1000;
+const LEAF_SCORE_HALF_REWARD: u32 = 1000;
+
+fn leaf_reward(score: u16) -> u32 {
+    let score = u32::from(score);
+    // Preserve heuristic ordering without letting a live leaf equal a terminal win.
+    (WIN_REWARD * score / (score + LEAF_SCORE_HALF_REWARD)).clamp(1, WIN_REWARD - 1)
+}
 
 #[derive(Default)]
 pub struct SearchDepthStats {
@@ -83,7 +92,8 @@ impl Node {
                 if visits == 0.0 {
                     return f64::INFINITY;
                 }
-                let mean = stats.reward.load(Ordering::Relaxed) as f64 / (visits * 1000.0);
+                let mean = stats.reward.load(Ordering::Relaxed) as f64
+                    / (visits * f64::from(WIN_REWARD));
                 mean + exploration * ((parent_visits + 1.0).ln() / visits).sqrt()
             };
             value(left).total_cmp(&value(right))
@@ -185,9 +195,9 @@ fn rollout_from(
     if board.get_health(you) == 0 {
         0
     } else if board.is_over() && board.get_winner().is_some_and(|winner| winner == *you) {
-        u32::MAX
+        WIN_REWARD
     } else {
-        evaluate_board(&board, you) as u32
+        leaf_reward(evaluate_board(&board, you))
     }
 }
 
@@ -268,6 +278,52 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("valid board");
         (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
+    }
+
+    #[test]
+    fn leaf_rewards_stay_between_terminal_outcomes_and_preserve_order() {
+        let mut previous = 0;
+        for score in 0..=u16::MAX {
+            let reward = leaf_reward(score);
+            assert!(reward > 0 && reward < WIN_REWARD);
+            assert!(reward >= previous);
+            previous = reward;
+        }
+        assert!(leaf_reward(1600) > leaf_reward(800));
+    }
+
+    #[test]
+    fn one_lucky_win_does_not_dominate_consistently_good_leaves() {
+        let (board, you, _) = turn33();
+        let node = Node::new_root(board);
+        let moves: Vec<_> = node.legal_own_moves(you).unwrap().into_iter().collect();
+        assert!(moves.len() >= 2);
+        for &mv in &moves {
+            for i in 0..1000 {
+                let reward = if mv == moves[1] {
+                    leaf_reward(800)
+                } else if mv == moves[0] && i == 0 {
+                    WIN_REWARD
+                } else {
+                    0
+                };
+                node.record(mv, reward);
+            }
+        }
+        assert_eq!(node.select_own_move(you, 1.0), Some(moves[1]));
+    }
+
+    #[test]
+    fn rollout_uses_terminal_rewards_for_winner_and_dead_snake() {
+        let mut game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
+            .unwrap();
+        game.board.snakes.retain(|snake| snake.id == game.you.id);
+        let ids = build_snake_id_map(&game);
+        let board = game.as_cell_board(&ids).unwrap();
+        let you = ids[&game.you.id];
+        let node = Node::new_root(board);
+        assert_eq!(node.rollout(&you, &mut SearchDepthStats::default()), WIN_REWARD);
+        assert_eq!(node.rollout(&SnakeId(3), &mut SearchDepthStats::default()), 0);
     }
 
     #[test]
