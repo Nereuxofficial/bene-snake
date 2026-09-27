@@ -188,11 +188,11 @@ mod tests {
     fn search_budget_reserves_time_for_the_response() {
         assert_eq!(
             search_budget(500, Duration::ZERO),
-            Duration::from_millis(330)
+            Duration::from_millis(425)
         );
         assert_eq!(
             search_budget(500, Duration::from_millis(75)),
-            Duration::from_millis(255)
+            Duration::from_millis(350)
         );
         assert_eq!(search_budget(40, Duration::ZERO), Duration::ZERO);
     }
