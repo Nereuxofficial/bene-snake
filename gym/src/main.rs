@@ -8,9 +8,11 @@ mod agents;
 mod runner;
 mod stats;
 
+use agents::{
+    HeuristicAgent, HeuristicPolicy, MctsAgent, MinimaxAgent, MinimaxPolicy, RandomAgent,
+};
 use lib::Agent;
-use agents::{HeuristicAgent, MctsAgent, MinimaxAgent, RandomAgent};
-use runner::{run_game, run_game_seeded, GameConfig};
+use runner::{GameConfig, run_game, run_game_seeded};
 use stats::{HeadToHeadStats, TournamentStats};
 
 #[derive(Parser)]
@@ -31,7 +33,12 @@ enum Commands {
         games: usize,
 
         /// Agents to include in the tournament
-        #[arg(short, long, value_delimiter = ',', default_value = "mcts,random,heuristic")]
+        #[arg(
+            short,
+            long,
+            value_delimiter = ',',
+            default_value = "mcts,random,heuristic"
+        )]
         agents: Vec<AgentType>,
 
         /// MCTS think time in milliseconds
@@ -115,7 +122,13 @@ enum AgentType {
     Mcts,
     Random,
     Heuristic,
+    /// The pre-tactical heuristic, kept so the corrected policy can be compared
+    /// against it directly in deterministic seeded duels.
+    HeuristicLegacy,
     Minimax,
+    /// The pre-paranoid minimax, kept so the search fix can be compared against
+    /// it directly in deterministic seeded duels.
+    MinimaxLegacy,
 }
 
 impl AgentType {
@@ -124,11 +137,19 @@ impl AgentType {
             AgentType::Mcts => Box::new(MctsAgent::new(Duration::from_millis(mcts_time_ms))),
             AgentType::Random => Box::new(RandomAgent::new()),
             AgentType::Heuristic => Box::new(HeuristicAgent::new()),
+            AgentType::HeuristicLegacy => Box::new(HeuristicAgent::with_policy(
+                "Heuristic-legacy",
+                HeuristicPolicy::Legacy,
+            )),
             AgentType::Minimax => Box::new(MinimaxAgent::new(minimax_depth)),
+            AgentType::MinimaxLegacy => Box::new(MinimaxAgent::with_policy(
+                "Minimax-legacy",
+                minimax_depth,
+                MinimaxPolicy::Legacy,
+            )),
         }
     }
 }
-
 
 fn main() {
     let cli = Cli::parse();
@@ -143,7 +164,15 @@ fn main() {
             parallel,
             json,
         } => {
-            run_tournament_cmd(games, &agents, mcts_time, minimax_depth, max_turns, parallel, json);
+            run_tournament_cmd(
+                games,
+                &agents,
+                mcts_time,
+                minimax_depth,
+                max_turns,
+                parallel,
+                json,
+            );
         }
         Commands::Duel {
             agent1,
@@ -156,7 +185,17 @@ fn main() {
             json,
             seed,
         } => {
-            run_duel_cmd(agent1, agent2, games, mcts_time, minimax_depth, max_turns, parallel, json, seed);
+            run_duel_cmd(
+                agent1,
+                agent2,
+                games,
+                mcts_time,
+                minimax_depth,
+                max_turns,
+                parallel,
+                json,
+                seed,
+            );
         }
         Commands::Benchmark {
             games,
@@ -178,10 +217,7 @@ fn run_tournament_cmd(
     json_output: bool,
 ) {
     if !json_output {
-        println!(
-            "\n{}",
-            "=== Snake Gym Tournament ===".green().bold()
-        );
+        println!("\n{}", "=== Snake Gym Tournament ===".green().bold());
         println!("Games: {} | Max turns: {}", num_games, max_turns);
         println!("Parallel: {} | MCTS time: {}ms", parallel, mcts_time);
         println!();
@@ -207,7 +243,9 @@ fn run_tournament_cmd(
         let pb = ProgressBar::new(num_games as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
                 .unwrap()
                 .progress_chars("#>-"),
         );
@@ -268,19 +306,21 @@ fn run_duel_cmd(
 ) {
     if !json_output {
         println!("\n{}", "=== Snake Gym Duel ===".green().bold());
-        println!(
-            "{:?} vs {:?}",
-            agent1_type, agent2_type
-        );
+        println!("{:?} vs {:?}", agent1_type, agent2_type);
         println!("Games: {} | Max turns: {}", num_games, max_turns);
+        println!("Seat order alternates; seeded runs reuse each seed for the paired swap.");
+        if seed.is_some() && num_games % 2 == 1 {
+            println!(
+                "Note: an odd game count leaves the final seed played in one seat only \
+                 (not a balanced pair)."
+            );
+        }
         println!();
     }
 
     // Create agents
     let agent1 = agent1_type.create_agent(mcts_time, minimax_depth);
     let agent2 = agent2_type.create_agent(mcts_time, minimax_depth);
-    let agents: Vec<&dyn Agent> = vec![agent1.as_ref(), agent2.as_ref()];
-
     let config = GameConfig::duel().with_max_turns(max_turns);
 
     // Progress bar
@@ -288,7 +328,9 @@ fn run_duel_cmd(
         let pb = ProgressBar::new(num_games as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
                 .unwrap()
                 .progress_chars("#>-"),
         );
@@ -303,10 +345,7 @@ fn run_duel_cmd(
         (0..num_games)
             .into_par_iter()
             .map(|index| {
-                let result = seed.map_or_else(
-                    || run_game(&agents, &config),
-                    |seed| run_game_seeded(&agents, &config, seed.wrapping_add(index as u64)),
-                );
+                let result = run_duel_game(index, seed, agent1.as_ref(), agent2.as_ref(), &config);
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -316,10 +355,7 @@ fn run_duel_cmd(
     } else {
         (0..num_games)
             .map(|index| {
-                let result = seed.map_or_else(
-                    || run_game(&agents, &config),
-                    |seed| run_game_seeded(&agents, &config, seed.wrapping_add(index as u64)),
-                );
+                let result = run_duel_game(index, seed, agent1.as_ref(), agent2.as_ref(), &config);
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -357,18 +393,71 @@ fn run_duel_cmd(
     }
 }
 
+/// Whether the two duel agents trade seats for this game index.
+///
+/// Even indices keep the user-facing order; odd indices swap it. Alternating on
+/// the game index (rather than a random coin) means each consecutive seed pair
+/// plays the same starting board from both seats.
+fn duel_seat_swapped(index: usize) -> bool {
+    index % 2 == 1
+}
+
+/// The seed used for a duel game index.
+///
+/// Both games of a paired seat swap share one seed. With 2*k games the seeds are
+/// `base, base, base+1, base+1, ...`, so every starting position is evaluated
+/// from both seats.
+fn duel_seed_for_index(base_seed: u64, index: usize) -> u64 {
+    base_seed.wrapping_add((index / 2) as u64)
+}
+
+fn run_duel_game(
+    index: usize,
+    base_seed: Option<u64>,
+    agent1: &dyn Agent,
+    agent2: &dyn Agent,
+    config: &GameConfig,
+) -> stats::GameResult {
+    let swapped = duel_seat_swapped(index);
+    let agents = if swapped {
+        [agent2, agent1]
+    } else {
+        [agent1, agent2]
+    };
+    let mut result = base_seed.map_or_else(
+        || run_game(&agents, config),
+        |seed| run_game_seeded(&agents, config, duel_seed_for_index(seed, index)),
+    );
+
+    // Convert the winner back from the seat order used for this game into the
+    // user-facing agent order.
+    if swapped {
+        result.winner = result.winner.map(swap_duel_winner);
+    }
+    result
+}
+
+fn swap_duel_winner(seat: usize) -> usize {
+    match seat {
+        0 => 1,
+        1 => 0,
+        other => other,
+    }
+}
+
 fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool) {
     println!("\n{}", "=== Snake Gym Benchmark ===".green().bold());
-    println!(
-        "Testing MCTS at different think times against Random baseline"
-    );
+    println!("Testing MCTS at different think times against Random baseline");
     println!("Games per config: {}", games_per_config);
     println!();
 
     let random_agent = RandomAgent::new();
 
     for &time_ms in mcts_times {
-        let mcts_agent = MctsAgent::with_name(format!("MCTS-{}ms", time_ms), Duration::from_millis(time_ms));
+        let mcts_agent = MctsAgent::with_name(
+            format!("MCTS-{}ms", time_ms),
+            Duration::from_millis(time_ms),
+        );
 
         let agents: Vec<&dyn Agent> = vec![&mcts_agent, &random_agent];
         let config = GameConfig::duel();
@@ -408,12 +497,11 @@ fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool
 
         let h2h = HeadToHeadStats::from_results(&results, mcts_agent.name(), random_agent.name());
 
-        let win_rate = h2h.agent1_wins as f64 / (h2h.agent1_wins + h2h.agent2_wins + h2h.draws) as f64 * 100.0;
-
         println!(
-            "  MCTS {}ms: {:.1}% win rate ({} wins / {} losses / {} draws)",
+            "  MCTS {}ms: {:.1}% win rate, {:.1}% score ({} wins / {} losses / {} draws)",
             time_ms,
-            win_rate,
+            h2h.win_rate(h2h.agent1_wins) * 100.0,
+            h2h.score(h2h.agent1_wins) * 100.0,
             h2h.agent1_wins.to_string().green(),
             h2h.agent2_wins.to_string().red(),
             h2h.draws.to_string().yellow()
@@ -428,5 +516,32 @@ impl GameConfig {
     fn with_max_turns(mut self, max_turns: u32) -> Self {
         self.max_turns = max_turns;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{duel_seat_swapped, duel_seed_for_index, swap_duel_winner};
+
+    #[test]
+    fn swapped_duel_winner_maps_back_to_agent_order() {
+        assert_eq!(swap_duel_winner(0), 1);
+        assert_eq!(swap_duel_winner(1), 0);
+        // A non-seat index (should not occur in a duel) is left alone.
+        assert_eq!(swap_duel_winner(3), 3);
+    }
+
+    #[test]
+    fn duel_seat_pairing_reuses_the_same_seed_for_both_seats() {
+        let base = 1_000_000u64;
+        assert!(!duel_seat_swapped(0));
+        assert!(duel_seat_swapped(1));
+        assert_eq!(duel_seed_for_index(base, 0), duel_seed_for_index(base, 1));
+        assert_eq!(duel_seed_for_index(base, 2), duel_seed_for_index(base, 3));
+        assert_eq!(duel_seed_for_index(base, 2), base + 1);
+        assert_eq!(duel_seed_for_index(base, 3), base + 1);
+        // The pairing is stable: the same index always maps to the same seed.
+        assert_eq!(duel_seed_for_index(base, 8), duel_seed_for_index(base, 9));
+        assert_eq!(duel_seed_for_index(base, 8), base + 4);
     }
 }

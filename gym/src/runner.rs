@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        ReasonableMovesGame, SimulableGame, SnakeId, StandardFoodPlaceableGame,
-        VictorDeterminableGame, build_snake_id_map,
+        ReasonableMovesGame, SimulableGame, StandardFoodPlaceableGame, VictorDeterminableGame,
+        build_snake_id_map,
     },
     wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
 };
@@ -183,23 +183,24 @@ fn run_game_from_start(
     let mut turn = 0;
 
     // Game loop
-    while !board.is_over() && turn < config.max_turns {
-        // Collect moves from all agents
-        let moves: Vec<_> = (0..config.num_snakes)
-            .filter_map(|i| {
-                let snake_id = SnakeId(i as u8);
-                // Check if snake is still alive (has reasonable moves)
-                let has_moves = board
-                    .reasonable_moves_for_each_snake()
-                    .into_iter()
-                    .any(|(sid, moves)| sid == snake_id && moves.into_iter().next().is_some());
-
-                if has_moves {
-                    let mv = agents[i].choose_move(&board, snake_id);
-                    Some((snake_id, [mv]))
-                } else {
-                    None
+    // The compact board's `is_over` is perspective-relative: it also returns true
+    // when SnakeId(0) (the API's `you`) dies. A gym game continues while at least
+    // two snakes remain, regardless of which one died.
+    while board.alive_snake_count() > 1 && turn < config.max_turns {
+        // Legal moves are identical for every agent in this simultaneous turn;
+        // compute them once instead of rescanning the board once per snake.
+        let moves: Vec<_> = board
+            .reasonable_moves_for_each_snake()
+            .into_iter()
+            .filter_map(|(snake_id, legal_moves)| {
+                if legal_moves.is_empty() {
+                    return None;
                 }
+                let agent = agents
+                    .get(snake_id.0 as usize)
+                    .expect("agent list must include every simulated snake");
+                let mv = agent.choose_move(&board, snake_id);
+                Some((snake_id, [mv]))
             })
             .collect();
 
@@ -223,7 +224,11 @@ fn run_game_from_start(
     }
 
     // Determine winner
-    let winner = board.get_winner();
+    // `get_winner` also returns a survivor when SnakeId(0) has died, which is
+    // useful to the live snake's perspective but is not a gym game result.
+    let winner = (board.alive_snake_count() == 1)
+        .then(|| board.get_winner())
+        .flatten();
 
     GameResult {
         winner: winner.map(|w| w.0 as usize),
@@ -258,7 +263,7 @@ pub fn run_tournament_parallel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use battlesnake_game_types::types::{FoodGettableGame, Move};
+    use battlesnake_game_types::types::{FoodGettableGame, Move, SnakeId};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct EatThenObserve {
@@ -322,5 +327,135 @@ mod tests {
         run_game_from_start(&[&eater, &MoveLeft], &config, game, &mut rng);
         assert!(eater.calls.load(Ordering::Relaxed) >= 2);
         assert!(eater.saw_replacement.load(Ordering::Relaxed));
+    }
+
+    struct FixedMove(Move);
+
+    impl Agent for FixedMove {
+        fn name(&self) -> &str {
+            "fixed-move"
+        }
+
+        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
+            self.0
+        }
+    }
+
+    struct CountMove {
+        calls: std::sync::Arc<AtomicUsize>,
+        movement: Move,
+    }
+
+    impl Agent for CountMove {
+        fn name(&self) -> &str {
+            "count-move"
+        }
+
+        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.movement
+        }
+    }
+
+    #[test]
+    fn two_snake_turn_cap_with_both_survivors_is_a_draw() {
+        let config = GameConfig {
+            max_turns: 3,
+            ..GameConfig::duel()
+        };
+        let mut game = generate_random_game_with_seed(&config, 20260929);
+        let positions = [Position::new(0, 0), Position::new(0, 10)];
+        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
+            snake.head = position;
+            snake.body = VecDeque::from([position, position, position]);
+            snake.health = 100;
+        }
+        game.you = game.board.snakes[0].clone();
+        game.board.food = vec![];
+        let mut rng = SmallRng::seed_from_u64(11);
+
+        // Both snakes move right along their own row and stay alive to the cap.
+        let result = run_game_from_start(
+            &[&FixedMove(Move::Right), &FixedMove(Move::Right)],
+            &config,
+            game,
+            &mut rng,
+        );
+
+        assert_eq!(result.turns, 3);
+        assert_eq!(result.winner, None, "two survivors at the cap is a draw");
+        assert_eq!(result.num_snakes, 2);
+    }
+
+    #[test]
+    fn two_snake_game_with_one_death_reports_the_survivor() {
+        let config = GameConfig {
+            max_turns: 5,
+            ..GameConfig::duel()
+        };
+        let mut game = generate_random_game_with_seed(&config, 20260930);
+        let positions = [Position::new(0, 10), Position::new(0, 0)];
+        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
+            snake.head = position;
+            snake.body = VecDeque::from([position, position, position]);
+            snake.health = 100;
+        }
+        game.you = game.board.snakes[0].clone();
+        game.board.food = vec![];
+        let mut rng = SmallRng::seed_from_u64(12);
+
+        // Snake 0 is on the top row and moves up off the board; snake 1 is on
+        // the bottom row and moves right safely.
+        let result = run_game_from_start(
+            &[&FixedMove(Move::Up), &FixedMove(Move::Right)],
+            &config,
+            game,
+            &mut rng,
+        );
+
+        assert_eq!(result.winner, Some(1));
+        assert_eq!(result.turns, 1);
+    }
+
+    #[test]
+    fn four_snake_gym_continues_after_snake_zero_dies() {
+        let config = GameConfig {
+            max_turns: 3,
+            ..GameConfig::default()
+        };
+        let mut game = generate_random_game_with_seed(&config, 20260927);
+        let positions = [
+            Position::new(0, 0),
+            Position::new(3, 0),
+            Position::new(6, 0),
+            Position::new(9, 0),
+        ];
+        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
+            snake.head = position;
+            snake.body = VecDeque::from([position, position, position]);
+            snake.health = 100;
+        }
+        game.board.snakes[0].health = 1;
+        game.you = game.board.snakes[0].clone();
+        game.board.food = vec![Position::new(5, 5)];
+
+        let survivor_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        // Snake zero survives the neck check but starves after moving right.
+        let die = FixedMove(Move::Right);
+        let survivors: Vec<_> = (0..3)
+            .map(|_| CountMove {
+                calls: std::sync::Arc::clone(&survivor_calls),
+                movement: Move::Up,
+            })
+            .collect();
+        let mut agents: Vec<&dyn Agent> = vec![&die];
+        agents.extend(survivors.iter().map(|agent| agent as &dyn Agent));
+        let mut rng = SmallRng::seed_from_u64(7);
+
+        let result = run_game_from_start(&agents, &config, game, &mut rng);
+
+        assert_eq!(result.turns, 3);
+        assert_eq!(result.winner, None);
+        assert_eq!(survivor_calls.load(Ordering::Relaxed), 9);
     }
 }

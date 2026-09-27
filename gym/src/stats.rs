@@ -118,7 +118,11 @@ impl TournamentStats {
             total_games,
             total_draws,
             avg_game_length,
-            min_game_length: if min_length == u32::MAX { 0 } else { min_length },
+            min_game_length: if min_length == u32::MAX {
+                0
+            } else {
+                min_length
+            },
             max_game_length: max_length,
         }
     }
@@ -201,6 +205,9 @@ impl HeadToHeadStats {
             match result.winner {
                 Some(0) => agent1_wins += 1,
                 Some(1) => agent2_wins += 1,
+                // `None` covers both genuine mutual elimination and games that
+                // hit the turn cap with more than one survivor. Both are draws
+                // for scoring purposes.
                 _ => draws += 1,
             }
         }
@@ -214,22 +221,124 @@ impl HeadToHeadStats {
         }
     }
 
+    /// Total number of games that contributed to this comparison.
+    pub fn total_games(&self) -> u32 {
+        self.agent1_wins + self.agent2_wins + self.draws
+    }
+
+    /// Fraction of games won outright. Draws are in the denominator, so this is
+    /// a win rate, not a score.
+    pub fn win_rate(&self, wins: u32) -> f64 {
+        let total = self.total_games();
+        if total == 0 {
+            0.0
+        } else {
+            wins as f64 / total as f64
+        }
+    }
+
+    /// Game score with a draw worth half a point, the standard expectation for
+    /// an even game. This does not reward or punish turn-cap draws as wins.
+    pub fn score(&self, wins: u32) -> f64 {
+        let total = self.total_games();
+        if total == 0 {
+            0.0
+        } else {
+            (wins as f64 + self.draws as f64 / 2.0) / total as f64
+        }
+    }
+
     pub fn print_summary(&self) {
         use colored::Colorize;
 
         println!("\n{}", "=== Head-to-Head Results ===".green().bold());
         println!(
-            "{}: {} wins ({:.1}%)",
+            "{}: {} wins ({:.1}% win, {:.1}% score)",
             self.agent1_name.cyan(),
             self.agent1_wins,
-            self.agent1_wins as f64 / (self.agent1_wins + self.agent2_wins + self.draws) as f64 * 100.0
+            self.win_rate(self.agent1_wins) * 100.0,
+            self.score(self.agent1_wins) * 100.0
         );
         println!(
-            "{}: {} wins ({:.1}%)",
+            "{}: {} wins ({:.1}% win, {:.1}% score)",
             self.agent2_name.cyan(),
             self.agent2_wins,
-            self.agent2_wins as f64 / (self.agent1_wins + self.agent2_wins + self.draws) as f64 * 100.0
+            self.win_rate(self.agent2_wins) * 100.0,
+            self.score(self.agent2_wins) * 100.0
         );
-        println!("Draws: {}", self.draws.to_string().yellow());
+        println!(
+            "Draws: {} of {} games",
+            self.draws.to_string().yellow(),
+            self.total_games()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(winner: Option<usize>, turns: u32, num_snakes: usize) -> GameResult {
+        GameResult {
+            winner,
+            turns,
+            num_snakes,
+        }
+    }
+
+    #[test]
+    fn head_to_head_counts_win_loss_and_draw() {
+        let results = [
+            result(Some(0), 10, 2),
+            result(Some(1), 20, 2),
+            result(None, 30, 2),
+            result(None, 40, 2),
+        ];
+        let h2h = HeadToHeadStats::from_results(&results, "a", "b");
+
+        assert_eq!(h2h.agent1_wins, 1);
+        assert_eq!(h2h.agent2_wins, 1);
+        assert_eq!(h2h.draws, 2);
+        assert_eq!(h2h.total_games(), 4);
+        assert!((h2h.win_rate(1) - 0.25).abs() < 1e-9);
+        // One win plus two half-point draws out of four games.
+        assert!((h2h.score(1) - 0.5).abs() < 1e-9);
+        assert!((h2h.score(0) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn head_to_head_winner_outside_two_seats_is_a_draw_not_a_misattributed_win() {
+        // A four-snake result has no meaning in a two-agent comparison.
+        let results = [result(Some(2), 15, 4)];
+        let h2h = HeadToHeadStats::from_results(&results, "a", "b");
+        assert_eq!(h2h.agent1_wins, 0);
+        assert_eq!(h2h.agent2_wins, 0);
+        assert_eq!(h2h.draws, 1);
+    }
+
+    #[test]
+    fn head_to_head_empty_results_do_not_divide_by_zero() {
+        let h2h = HeadToHeadStats::from_results(&[], "a", "b");
+        assert_eq!(h2h.total_games(), 0);
+        assert_eq!(h2h.win_rate(0), 0.0);
+        assert_eq!(h2h.score(0), 0.0);
+    }
+
+    #[test]
+    fn tournament_credits_all_survivors_of_a_turn_cap_draw() {
+        let results = [result(None, 100, 4), result(Some(0), 50, 4)];
+        let names = ["a", "b", "c", "d"].map(String::from);
+        let stats = TournamentStats::from_results(&results, &names);
+
+        assert_eq!(stats.total_games, 2);
+        assert_eq!(stats.total_draws, 1);
+        for (i, agent) in stats.agent_stats.iter().enumerate() {
+            assert_eq!(agent.total_games, 2, "agent {i} should play both games");
+            assert_eq!(agent.draws, 1);
+        }
+        assert_eq!(stats.agent_stats[0].wins, 1);
+        assert_eq!(stats.agent_stats[1].losses, 1);
+        assert_eq!(stats.agent_stats[2].losses, 1);
+        assert_eq!(stats.agent_stats[3].losses, 1);
     }
 }
