@@ -1,7 +1,7 @@
 use crate::{
     compact_representation::{
-        core::{dimensions::Dimensions, CellIndex},
         CellNum,
+        core::{CellIndex, dimensions::Dimensions},
     },
     types::PositionGettableGame,
     wire_representation::Position,

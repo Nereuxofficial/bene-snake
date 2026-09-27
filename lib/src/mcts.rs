@@ -36,22 +36,36 @@ fn leaf_reward(score: u16) -> u32 {
     (WIN_REWARD * score / (score + LEAF_SCORE_HALF_REWARD)).clamp(1, WIN_REWARD - 1)
 }
 
+/// A cached per-snake policy built from the state before any moves are chosen.
+struct MovePolicy {
+    weights: [u8; 4],
+    /// Bit `Move::as_index()` is set for each reasonable move whose destination can also
+    /// be entered by a living opponent that is at least as long after the move. The
+    /// simulator kills every snake tied for the longest new head, so an equal or longer
+    /// opponent sharing our destination means we lose that head-to-head.
+    losing_head_contests: u8,
+}
+
 /// Build one cached small-integer policy per snake from the state before any moves are chosen.
 /// The score is deliberately simple: all legal moves start with support, then safe mobility and
-/// urgent food progress add weight, while likely losing head contests reduce it.
-fn opponent_move_weights(
+/// urgent food progress add weight, while likely losing head contests reduce it. The
+/// `losing_head_contests` mask is the same tactical check the tree uses to prune our own moves.
+fn opponent_move_policy(
     board: &CellBoard4Snakes11x11,
     snake: SnakeId,
     legal: MoveArray,
     all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
-) -> [u8; 4] {
+) -> MovePolicy {
     let head = board.get_head_as_position(&snake);
     let health = board.get_health_i64(&snake);
     let length = board.get_length_i64(&snake);
     let food = board.get_all_food_as_positions();
     let nearest_food = food.iter().map(|pos| manhattan(head, *pos)).min();
     let food_is_urgent = health <= 50;
-    let mut weights = [0; 4];
+    let mut policy = MovePolicy {
+        weights: [0; 4],
+        losing_head_contests: 0,
+    };
 
     for mv in legal {
         let destination = head.add_vec(mv.to_vector());
@@ -92,6 +106,10 @@ fn opponent_move_weights(
             }
         }
 
+        // The simulator compares lengths after the move, including growth. Two snakes
+        // entering the same square both grow together, so comparing the pre-move lengths
+        // here is equivalent. Food still matters because `is_feasible_destination` only
+        // keeps a low-health opponent alive when the shared square is food.
         let shared_losing_destination = all_moves.iter().any(|(other, other_legal)| {
             if *other == snake || board.get_length_i64(other) < length {
                 return false;
@@ -105,11 +123,33 @@ fn opponent_move_weights(
             })
         });
         if shared_losing_destination {
+            policy.losing_head_contests |= 1 << mv.as_index();
             weight = (weight / 4).max(1);
         }
-        weights[mv.as_index()] = weight;
+        policy.weights[mv.as_index()] = weight;
     }
-    weights
+    policy
+}
+
+/// Keep only the reasonable moves that do not lose a head-to-head. When every move is
+/// contested, fall back to the full reasonable set so search retains a nonempty candidate
+/// set and can compare those unavoidable risks.
+fn pruned_tree_moves(legal: MoveArray, losing_head_contests: u8) -> MoveArray {
+    let kept: MoveArray = legal
+        .into_iter()
+        .filter(|mv| losing_head_contests & (1 << mv.as_index()) == 0)
+        .collect();
+    if kept.is_empty() { legal } else { kept }
+}
+
+#[cfg(test)]
+fn opponent_move_weights(
+    board: &CellBoard4Snakes11x11,
+    snake: SnakeId,
+    legal: MoveArray,
+    all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
+) -> [u8; 4] {
+    opponent_move_policy(board, snake, legal, all_moves).weights
 }
 
 fn is_feasible_destination(
@@ -195,6 +235,9 @@ pub struct Node {
 struct NodeMoveCache {
     moves: ArrayVec<(SnakeId, MoveArray), 4>,
     policies: [[u8; 4]; 4],
+    /// Fixed-size, per-snake tree candidate lists with losing head-to-head contests
+    /// removed. Only `you` ever reads its entry; opponents keep sampling `moves`.
+    tree_moves: [MoveArray; 4],
 }
 
 impl Node {
@@ -212,10 +255,17 @@ impl Node {
         self.move_cache.get_or_init(|| {
             let moves = self.board.reasonable_moves_for_each_snake();
             let mut policies = [[0; 4]; 4];
+            let mut tree_moves = [MoveArray::new(); 4];
             for (id, legal) in &moves {
-                policies[id.as_usize()] = opponent_move_weights(&self.board, *id, *legal, &moves);
+                let policy = opponent_move_policy(&self.board, *id, *legal, &moves);
+                policies[id.as_usize()] = policy.weights;
+                tree_moves[id.as_usize()] = pruned_tree_moves(*legal, policy.losing_head_contests);
             }
-            NodeMoveCache { moves, policies }
+            NodeMoveCache {
+                moves,
+                policies,
+                tree_moves,
+            }
         })
     }
 
@@ -229,6 +279,9 @@ impl Node {
             .unwrap_or(0)
     }
 
+    /// The full reasonable move set, shared with opponents and rollouts. The tree no
+    /// longer selects from this directly; it is the fallback when pruning contests all moves.
+    #[cfg(test)]
     fn legal_own_moves(&self, you: SnakeId) -> Option<battlesnake_game_types::types::MoveArray> {
         self.move_cache()
             .moves
@@ -238,8 +291,19 @@ impl Node {
             .map(|(_, moves)| moves)
     }
 
+    /// Our tree candidate moves: reasonable moves minus losing head-to-head contests.
+    /// Returns `None` only when `you` has no reasonable moves (for example, a dead snake).
+    fn tree_own_moves(&self, you: SnakeId) -> Option<MoveArray> {
+        let cache = self.move_cache();
+        cache
+            .moves
+            .iter()
+            .any(|(id, _)| *id == you)
+            .then(|| cache.tree_moves[you.as_usize()])
+    }
+
     fn select_own_move(&self, you: SnakeId, exploration: f64) -> Option<Move> {
-        let moves = self.legal_own_moves(you)?;
+        let moves = self.tree_own_moves(you)?;
         let parent_visits = self.visits.load(Ordering::Relaxed) as f64;
         moves.into_iter().max_by(|left, right| {
             let value = |mv: &Move| {
@@ -257,8 +321,9 @@ impl Node {
     }
 
     /// Choose only bene-snake's move. Opponent responses are averaged through visits.
+    /// Only uncontested tree candidates are considered.
     pub fn best_move(&self, you: SnakeId) -> Option<Move> {
-        let moves = self.legal_own_moves(you)?;
+        let moves = self.tree_own_moves(you)?;
         moves.into_iter().max_by(|left, right| {
             let stats = |mv: &Move| &self.own_moves[mv.as_index()];
             let left_visits = stats(left).visits.load(Ordering::Relaxed);
@@ -481,6 +546,331 @@ mod tests {
                 .find(|id| *id != ids[&own_wire_id])
                 .unwrap(),
         )
+    }
+
+    /// Build an 11x11 board from explicit, already-adjacent body chains. The first
+    /// position is the head. `opponents` is a slice of (body, health) specs.
+    fn board_from_specs(
+        own_body: &[Position],
+        own_health: i32,
+        opponents: &[(&[Position], i32)],
+        food: Vec<Position>,
+    ) -> (CellBoard4Snakes11x11, SnakeId, Vec<SnakeId>) {
+        use battlesnake_game_types::wire_representation::BattleSnake;
+
+        let mut game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
+            .expect("valid fixture");
+        let own_wire_id = game.you.id.clone();
+        let template = game
+            .board
+            .snakes
+            .iter()
+            .find(|snake| snake.id != own_wire_id)
+            .expect("fixture has an opponent")
+            .clone();
+
+        let set_body = |snake: &mut BattleSnake, body: &[Position], health: i32| {
+            snake.head = body[0];
+            snake.body = body.iter().copied().collect();
+            snake.health = health;
+        };
+
+        set_body(&mut game.you, own_body, own_health);
+        let mut snakes = vec![game.you.clone()];
+        for (index, (body, health)) in opponents.iter().enumerate() {
+            let mut snake = template.clone();
+            snake.id = format!("gs_opponent_{index}");
+            snake.name = format!("opponent-{index}");
+            set_body(&mut snake, body, *health);
+            snakes.push(snake);
+        }
+        game.board.snakes = snakes;
+        game.board.food = food;
+
+        let ids = build_snake_id_map(&game);
+        let board = game.as_cell_board(&ids).expect("valid board");
+        let own = ids[&own_wire_id];
+        let opponent_ids = (0..opponents.len())
+            .map(|index| ids[&format!("gs_opponent_{index}")])
+            .collect();
+        (board, own, opponent_ids)
+    }
+
+    #[test]
+    fn equal_length_shared_head_destination_is_pruned() {
+        // Own head (5, 5), opponent head (5, 7): both can enter (5, 6). Equal lengths
+        // mean the simulator kills both of us, so Up must leave the tree candidate set.
+        let (board, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], 100)],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        let legal = node.legal_own_moves(you).unwrap();
+        assert!(legal.contains(&Move::Up));
+        let tree = node.tree_own_moves(you).unwrap();
+        assert!(!tree.contains(&Move::Up));
+        assert!(tree.contains(&Move::Left));
+        assert!(tree.contains(&Move::Right));
+        assert!(!tree.as_slice().is_empty());
+    }
+
+    #[test]
+    fn longer_opponent_shared_head_destination_is_pruned() {
+        let (board, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(
+                &[
+                    Position::new(5, 7),
+                    Position::new(5, 8),
+                    Position::new(5, 9),
+                ],
+                100,
+            )],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        let tree = node.tree_own_moves(you).unwrap();
+        assert!(!tree.contains(&Move::Up));
+        assert!(tree.contains(&Move::Left));
+    }
+
+    #[test]
+    fn shorter_opponent_shared_head_destination_is_retained() {
+        // We are the longer snake, so we win the shared square and keep the move.
+        let (board, you, _) = board_from_specs(
+            &[
+                Position::new(5, 5),
+                Position::new(5, 4),
+                Position::new(5, 3),
+            ],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], 100)],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        assert!(node.tree_own_moves(you).unwrap().contains(&Move::Up));
+    }
+
+    #[test]
+    fn uncontested_destinations_keep_the_full_reasonable_set() {
+        let (board, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(2, 9), Position::new(2, 10)], 100)],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        let legal = node.legal_own_moves(you).unwrap();
+        let tree = node.tree_own_moves(you).unwrap();
+        assert_eq!(tree.as_slice(), legal.as_slice());
+        assert!(tree.contains(&Move::Up));
+    }
+
+    #[test]
+    fn food_growth_keeps_a_starving_challenger_in_the_head_to_head() {
+        // Equal lengths, opponent at 1 HP, and the shared square is food. Eating keeps
+        // the opponent alive and grows both snakes, so the tie still kills us. Without
+        // the food the opponent starves and never contests the square.
+        let own = [Position::new(5, 5), Position::new(5, 4)];
+        let opponent = [Position::new(5, 7), Position::new(5, 8)];
+        let shared = Position::new(5, 6);
+
+        let (fed_board, fed_you, fed_opponents) =
+            board_from_specs(&own, 100, &[(&opponent, 1)], vec![shared]);
+        let fed_node = Node::new_root(fed_board);
+        let fed_opponent = fed_opponents[0];
+        assert!(
+            fed_node
+                .tree_own_moves(fed_you)
+                .unwrap()
+                .contains(&Move::Left)
+        );
+        assert!(
+            !fed_node
+                .tree_own_moves(fed_you)
+                .unwrap()
+                .contains(&Move::Up)
+        );
+
+        let (_, fed_next) =
+            fed_board.simulate_single_action(&[(fed_you, Move::Up), (fed_opponent, Move::Down)]);
+        assert_eq!(
+            fed_next.get_health_i64(&fed_you),
+            0,
+            "both grew to equal length, so both die"
+        );
+        assert_eq!(fed_next.get_health_i64(&fed_opponent), 0);
+
+        let (hungry_board, hungry_you, hungry_opponents) =
+            board_from_specs(&own, 100, &[(&opponent, 1)], Vec::new());
+        let hungry_node = Node::new_root(hungry_board);
+        assert!(
+            hungry_node
+                .tree_own_moves(hungry_you)
+                .unwrap()
+                .contains(&Move::Up)
+        );
+
+        let (_, hungry_next) = hungry_board
+            .simulate_single_action(&[(hungry_you, Move::Up), (hungry_opponents[0], Move::Down)]);
+        assert_eq!(
+            hungry_next.get_health_i64(&hungry_opponents[0]),
+            0,
+            "without food the 1 HP opponent starves"
+        );
+        assert!(hungry_next.get_health_i64(&hungry_you) > 0);
+    }
+
+    #[test]
+    fn opponent_that_dies_in_hazard_does_not_prune_shared_destination() {
+        use battlesnake_game_types::types::HazardSettableGame;
+
+        let shared = Position::new(5, 6);
+        let (template, _, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], 100)],
+            Vec::new(),
+        );
+        let opponent_health = i32::from(template.get_hazard_damage()) + 1;
+
+        // Reset to exactly one move's worth of health above lethal hazard damage.
+        // The opponent's move to the shared square is geometrically reasonable but dies
+        // during per-snake state generation, before head-to-head resolution.
+        let (mut board, you, opponents) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], opponent_health)],
+            Vec::new(),
+        );
+        board.set_hazard(board.native_from_position(shared));
+        let node = Node::new_root(board);
+        assert!(node.tree_own_moves(you).unwrap().contains(&Move::Up));
+
+        let (_, next) =
+            board.simulate_single_action(&[(you, Move::Up), (opponents[0], Move::Down)]);
+        assert!(next.get_health_i64(&you) > 0);
+        assert_eq!(next.get_health_i64(&opponents[0]), 0);
+    }
+
+    #[test]
+    fn all_contested_moves_fall_back_to_the_full_reasonable_set() {
+        // Own head (0, 5) has a spine going down, leaving only Up (0, 6) and Right
+        // (1, 5) as reasonable moves (Down is the neck, Left is off-board). Two
+        // equal-length opponents can each enter one of them, so naive filtering would
+        // leave nothing. The fallback must keep both moves deterministically.
+        let (board, you, _) = board_from_specs(
+            &[
+                Position::new(0, 5),
+                Position::new(0, 4),
+                Position::new(0, 3),
+            ],
+            100,
+            &[
+                (
+                    &[
+                        Position::new(1, 6),
+                        Position::new(2, 6),
+                        Position::new(3, 6),
+                    ],
+                    100,
+                ),
+                (
+                    &[
+                        Position::new(1, 4),
+                        Position::new(2, 4),
+                        Position::new(3, 4),
+                    ],
+                    100,
+                ),
+            ],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        let legal = node.legal_own_moves(you).unwrap();
+        assert_eq!(legal.as_slice(), &[Move::Up, Move::Right]);
+        let tree = node.tree_own_moves(you).unwrap();
+        assert_eq!(tree.as_slice(), legal.as_slice());
+        assert_eq!(
+            node.tree_own_moves(you).unwrap().as_slice(),
+            tree.as_slice()
+        );
+    }
+
+    #[test]
+    fn pruning_only_changes_our_tree_candidates() {
+        let (board, you, opponents) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], 100)],
+            Vec::new(),
+        );
+        let opponent = opponents[0];
+        let full = board.reasonable_moves_for_each_snake();
+        let node = Node::new_root(board);
+        let cache = node.move_cache();
+
+        // The sampling lists used by opponents and rollouts are untouched by pruning.
+        for (id, legal) in &full {
+            let cached = cache
+                .moves
+                .iter()
+                .find(|(cached_id, _)| cached_id == id)
+                .map(|(_, moves)| moves)
+                .unwrap();
+            assert_eq!(cached.as_slice(), legal.as_slice());
+        }
+        assert!(
+            !cache.tree_moves[you.as_usize()].contains(&Move::Up),
+            "our tree list must be pruned"
+        );
+        let cached_opponent = cache
+            .moves
+            .iter()
+            .find(|(id, _)| *id == opponent)
+            .map(|(_, moves)| moves)
+            .unwrap();
+        assert!(
+            cached_opponent.contains(&Move::Down),
+            "the opponent's full move list still contains the contested move"
+        );
+
+        // Opponent sampling consumes the same full list with the same policy weights.
+        let opponent_legal = full
+            .iter()
+            .find(|(id, _)| *id == opponent)
+            .map(|(_, moves)| *moves)
+            .unwrap();
+        let mut joint_rng = rand::rngs::SmallRng::seed_from_u64(7);
+        let mut expected_rng = rand::rngs::SmallRng::seed_from_u64(7);
+        let joint = node.sample_joint_action(you, Move::Left, &mut joint_rng);
+        let sampled = joint.iter().find(|(id, _)| *id == opponent).unwrap().1;
+        let expected = sample_opponent_move(
+            opponent_legal,
+            cache.policies[opponent.as_usize()],
+            &mut expected_rng,
+        );
+        assert_eq!(sampled, expected);
+    }
+
+    #[test]
+    fn best_and_selection_ignore_contested_losing_moves() {
+        let (board, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(5, 7), Position::new(5, 8)], 100)],
+            Vec::new(),
+        );
+        let node = Node::new_root(board);
+        // Even with a decisive reward history, a pruned move is never selected.
+        node.record(Move::Up, WIN_REWARD * 10);
+        node.record(Move::Left, 1);
+        assert_ne!(node.best_move(you), Some(Move::Up));
+        assert_ne!(node.select_own_move(you, 1.0), Some(Move::Up));
+        assert_eq!(node.best_move(you), Some(Move::Left));
     }
 
     #[test]

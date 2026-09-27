@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "food_positions"
 harness = false
+
+[[bench]]
+name = "mcts_pruning"
+harness = false

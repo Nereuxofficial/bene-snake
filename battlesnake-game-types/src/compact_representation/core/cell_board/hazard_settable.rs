@@ -1,5 +1,5 @@
 use crate::{
-    compact_representation::{core::dimensions::Dimensions, CellNum},
+    compact_representation::{CellNum, core::dimensions::Dimensions},
     types::HazardSettableGame,
 };
 

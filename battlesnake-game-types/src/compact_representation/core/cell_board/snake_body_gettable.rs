@@ -1,5 +1,5 @@
 use crate::{
-    compact_representation::{core::dimensions::Dimensions, CellNum},
+    compact_representation::{CellNum, core::dimensions::Dimensions},
     types::{HeadGettableGame, SnakeBodyGettableGame},
 };
 
@@ -55,8 +55,8 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 #[cfg(test)]
 mod tests {
     use crate::{
-        compact_representation::{core::dimensions::Custom, CellIndex},
-        types::{build_snake_id_map, SnakeId},
+        compact_representation::{CellIndex, core::dimensions::Custom},
+        types::{SnakeId, build_snake_id_map},
         wire_representation::Game,
     };
 

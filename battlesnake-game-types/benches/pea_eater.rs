@@ -7,9 +7,9 @@ use battlesnake_game_types::{
     },
 };
 use itertools::Itertools;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use tracing_flame::FlameLayer;
-use tracing_subscriber::{fmt::Layer, prelude::*, Registry};
+use tracing_subscriber::{Registry, fmt::Layer, prelude::*};
 
 fn run_from_fixture_till_end(
     rng: &mut impl Rng,
