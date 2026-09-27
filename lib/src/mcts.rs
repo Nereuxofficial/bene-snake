@@ -1,20 +1,24 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
 
 use arrayvec::ArrayVec;
 use battlesnake_game_types::{
+    compact_representation::CellIndex,
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{
-        Action, HealthGettableGame, Move, RandomReasonableMovesGame, ReasonableMovesGame, SnakeId,
-        VictorDeterminableGame,
+        Action, FoodGettableGame, FoodQueryableGame, HazardQueryableGame, HeadGettableGame,
+        HealthGettableGame, LengthGettableGame, Move, MoveArray, NeckQueryableGame,
+        PositionGettableGame, RandomReasonableMovesGame, ReasonableMovesGame, SizeDeterminableGame,
+        SnakeId, VictorDeterminableGame,
     },
+    wire_representation::Position,
 };
-use rand::{Rng, seq::IndexedRandom};
+use rand::{Rng, RngExt, seq::IndexedRandom};
 
 use crate::eval::evaluate_board;
 use tracing::info;
@@ -24,11 +28,144 @@ const MAX_TREE_DEPTH: usize = 64;
 // Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
 const WIN_REWARD: u32 = 1000;
 const LEAF_SCORE_HALF_REWARD: u32 = 1000;
+const OPPONENT_UNIFORM_PERCENT: u32 = 20;
 
 fn leaf_reward(score: u16) -> u32 {
     let score = u32::from(score);
     // Preserve heuristic ordering without letting a live leaf equal a terminal win.
     (WIN_REWARD * score / (score + LEAF_SCORE_HALF_REWARD)).clamp(1, WIN_REWARD - 1)
+}
+
+/// Build one cached small-integer policy per snake from the state before any moves are chosen.
+/// The score is deliberately simple: all legal moves start with support, then safe mobility and
+/// urgent food progress add weight, while likely losing head contests reduce it.
+fn opponent_move_weights(
+    board: &CellBoard4Snakes11x11,
+    snake: SnakeId,
+    legal: MoveArray,
+    all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
+) -> [u8; 4] {
+    let head = board.get_head_as_position(&snake);
+    let health = board.get_health_i64(&snake);
+    let length = board.get_length_i64(&snake);
+    let food = board.get_all_food_as_positions();
+    let nearest_food = food.iter().map(|pos| manhattan(head, *pos)).min();
+    let food_is_urgent = health <= 50;
+    let mut weights = [0; 4];
+
+    for mv in legal {
+        let destination = head.add_vec(mv.to_vector());
+        let off_board = board.off_board(destination);
+        let native = (!off_board).then(|| board.native_from_position(destination));
+        // The native position must only be inspected after validating bounds: when every
+        // direction is blocked the simulator's conventional fallback is Up, even off-board.
+        let has_food = native.as_ref().is_some_and(|pos| board.is_food(pos));
+        let immediate_hazard_death = native.as_ref().is_some_and(|pos| {
+            board.is_hazard(pos) && health <= 1 + i64::from(board.get_hazard_damage()) && !has_food
+        });
+        let starvation_death = health <= 1 && !has_food;
+        let reverses_into_neck = native
+            .as_ref()
+            .is_some_and(|pos| board.is_neck(&snake, pos));
+        let dies_immediately =
+            off_board || immediate_hazard_death || starvation_death || reverses_into_neck;
+
+        let mut weight = 4u8;
+        if dies_immediately {
+            weight = 1;
+        } else {
+            let mobility = board
+                .free_neighbors(CellIndex::new(destination, board.get_width() as u8))
+                .count() as u8;
+            weight += mobility.min(4) * 2;
+            if food_is_urgent && has_food {
+                weight += 8;
+            } else if food_is_urgent
+                && nearest_food.is_some_and(|distance| {
+                    food.iter()
+                        .map(|pos| manhattan(destination, *pos))
+                        .min()
+                        .is_some_and(|next| next < distance)
+                })
+            {
+                weight += 3;
+            }
+        }
+
+        let shared_losing_destination = all_moves.iter().any(|(other, other_legal)| {
+            if *other == snake || board.get_length_i64(other) < length {
+                return false;
+            }
+            let other_health = board.get_health_i64(other);
+            let other_head = board.get_head_as_position(other);
+            other_legal.iter().any(|other_mv| {
+                let other_destination = other_head.add_vec(other_mv.to_vector());
+                other_destination == destination
+                    && is_feasible_destination(board, *other, other_destination, other_health)
+            })
+        });
+        if shared_losing_destination {
+            weight = (weight / 4).max(1);
+        }
+        weights[mv.as_index()] = weight;
+    }
+    weights
+}
+
+fn is_feasible_destination(
+    board: &CellBoard4Snakes11x11,
+    snake: SnakeId,
+    destination: Position,
+    health: i64,
+) -> bool {
+    if board.off_board(destination) {
+        return false;
+    }
+    let native = board.native_from_position(destination);
+    if board.is_neck(&snake, &native) {
+        return false;
+    }
+    let can_enter = board
+        .free_neighbors(CellIndex::new(
+            board.get_head_as_position(&snake),
+            board.get_width() as u8,
+        ))
+        .any(|neighbor| neighbor == native);
+    let food = board.is_food(&native);
+    let hazard_damage = if board.is_hazard(&native) {
+        board.get_hazard_damage()
+    } else {
+        0
+    };
+    can_enter && (food || health > 1 + i64::from(hazard_damage))
+}
+
+fn manhattan(left: Position, right: Position) -> u32 {
+    left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
+}
+
+fn sample_opponent_move(moves: MoveArray, weights: [u8; 4], rng: &mut impl Rng) -> Move {
+    // A 20% uniform component keeps every reasonable move possible; the rest follows the cached
+    // weighted heuristic. This avoids a softmax and keeps sampling allocation-free.
+    if rng.random_range(0..100) < OPPONENT_UNIFORM_PERCENT {
+        return moves.choose(rng).copied().unwrap_or(Move::Up);
+    }
+    let total_weight: u32 = moves
+        .iter()
+        .map(|mv| u32::from(weights[mv.as_index()]))
+        .sum();
+    if total_weight == 0 {
+        return moves.choose(rng).copied().unwrap_or(Move::Up);
+    }
+    let mut sample = rng.random_range(0..total_weight);
+    for mv in moves {
+        let weight = u32::from(weights[mv.as_index()]);
+        if sample < weight {
+            return mv;
+        }
+        sample -= weight;
+    }
+    Move::Up
 }
 
 #[derive(Default)]
@@ -52,6 +189,12 @@ pub struct Node {
     children: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
     visits: AtomicU32,
     own_moves: [MoveStats; 4],
+    move_cache: OnceLock<NodeMoveCache>,
+}
+
+struct NodeMoveCache {
+    moves: ArrayVec<(SnakeId, MoveArray), 4>,
+    policies: [[u8; 4]; 4],
 }
 
 impl Node {
@@ -61,7 +204,19 @@ impl Node {
             children: Mutex::new(BTreeMap::new()),
             visits: AtomicU32::new(0),
             own_moves: std::array::from_fn(|_| MoveStats::default()),
+            move_cache: OnceLock::new(),
         }
+    }
+
+    fn move_cache(&self) -> &NodeMoveCache {
+        self.move_cache.get_or_init(|| {
+            let moves = self.board.reasonable_moves_for_each_snake();
+            let mut policies = [[0; 4]; 4];
+            for (id, legal) in &moves {
+                policies[id.as_usize()] = opponent_move_weights(&self.board, *id, *legal, &moves);
+            }
+            NodeMoveCache { moves, policies }
+        })
     }
 
     pub fn get_depth(&self) -> u32 {
@@ -75,9 +230,10 @@ impl Node {
     }
 
     fn legal_own_moves(&self, you: SnakeId) -> Option<battlesnake_game_types::types::MoveArray> {
-        self.board
-            .reasonable_moves_for_each_snake()
-            .into_iter()
+        self.move_cache()
+            .moves
+            .iter()
+            .copied()
             .find(|(id, _)| *id == you)
             .map(|(_, moves)| moves)
     }
@@ -122,16 +278,17 @@ impl Node {
         own_move: Move,
         rng: &mut impl Rng,
     ) -> ArrayVec<(SnakeId, Move), 4> {
-        self.board
-            .reasonable_moves_for_each_snake()
-            .into_iter()
+        let cache = self.move_cache();
+        cache
+            .moves
+            .iter()
             .map(|(id, moves)| {
-                let mv = if id == you {
+                let mv = if *id == you {
                     own_move
                 } else {
-                    *moves.choose(rng).expect("living snake has a move")
+                    sample_opponent_move(*moves, cache.policies[id.as_usize()], rng)
                 };
-                (id, mv)
+                (*id, mv)
             })
             .collect()
     }
@@ -268,6 +425,7 @@ pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use battlesnake_game_types::wire_representation::Position;
     use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
     use rand::SeedableRng;
     use std::{thread, time::Duration};
@@ -278,6 +436,51 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("valid board");
         (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
+    }
+
+    fn policy_fixture(
+        food: Vec<Position>,
+        own_health: u8,
+        contested_head: bool,
+    ) -> (CellBoard4Snakes11x11, SnakeId, SnakeId) {
+        let mut game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
+            .expect("valid fixture");
+        let own_wire_id = game.you.id.clone();
+        let own_head = Position { x: 5, y: 5 };
+        let own_neck = Position { x: 5, y: 4 };
+        let other_head = if contested_head {
+            Position { x: 5, y: 7 }
+        } else {
+            Position { x: 2, y: 9 }
+        };
+        let other_neck = Position {
+            x: other_head.x,
+            y: other_head.y + 1,
+        };
+        for snake in &mut game.board.snakes {
+            if snake.id == own_wire_id {
+                snake.health = i32::from(own_health);
+                snake.head = own_head;
+                snake.body = vec![own_head, own_neck].into();
+            } else {
+                snake.head = other_head;
+                snake.body = vec![other_head, other_neck].into();
+            }
+        }
+        game.board.food = food;
+        game.you.health = i32::from(own_health);
+        game.you.head = own_head;
+        game.you.body = vec![own_head, own_neck].into();
+        let ids = build_snake_id_map(&game);
+        let board = game.as_cell_board(&ids).expect("valid policy board");
+        (
+            board,
+            ids[&own_wire_id],
+            ids.values()
+                .copied()
+                .find(|id| *id != ids[&own_wire_id])
+                .unwrap(),
+        )
     }
 
     #[test]
@@ -336,6 +539,7 @@ mod tests {
     fn opponent_moves_are_sampled_independently_of_our_move() {
         let (board, you, opponent) = turn33();
         let node = Node::new_root(board);
+        assert_ne!(opponent, SnakeId(0));
         let mut up_rng = rand::rngs::SmallRng::seed_from_u64(12);
         let mut down_rng = rand::rngs::SmallRng::seed_from_u64(12);
         for _ in 0..100 {
@@ -346,6 +550,112 @@ mod tests {
                 down.iter().find(|(id, _)| *id == opponent)
             );
         }
+    }
+
+    #[test]
+    fn hungry_opponent_policy_favors_food_and_keeps_all_moves_supported() {
+        let food_pos = Position { x: 4, y: 5 };
+        let (board, snake, _) = policy_fixture(vec![food_pos], 1, false);
+        let moves = board.reasonable_moves_for_each_snake();
+        let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
+        let weights = opponent_move_weights(&board, snake, legal, &moves);
+        assert!(weights[Move::Left.as_index()] > weights[Move::Right.as_index()]);
+        assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
+    }
+
+    #[test]
+    fn equal_or_larger_shared_head_square_is_downweighted() {
+        let (board, snake, _) = policy_fixture(Vec::new(), 100, true);
+        let moves = board.reasonable_moves_for_each_snake();
+        let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
+        let weights = opponent_move_weights(&board, snake, legal, &moves);
+        assert!(legal.contains(&Move::Up));
+        assert!(weights[Move::Up.as_index()] < weights[Move::Left.as_index()]);
+        assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
+    }
+
+    #[test]
+    fn no_food_and_empty_move_lists_have_safe_fallbacks() {
+        let (board, snake, _) = policy_fixture(Vec::new(), 100, false);
+        let moves = board.reasonable_moves_for_each_snake();
+        let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
+        let weights = opponent_move_weights(&board, snake, legal, &moves);
+        assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(31);
+        assert_eq!(
+            sample_opponent_move(MoveArray::new(), [0; 4], &mut rng),
+            Move::Up
+        );
+    }
+
+    #[test]
+    fn uniform_component_keeps_zero_weight_moves_sampleable() {
+        let moves: MoveArray = [Move::Up, Move::Left, Move::Right].into_iter().collect();
+        let mut weights = [0; 4];
+        weights[Move::Up.as_index()] = 20;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(44);
+        let mut counts = [0; 4];
+        for _ in 0..6000 {
+            let mv = sample_opponent_move(moves, weights, &mut rng);
+            assert!(moves.contains(&mv));
+            counts[mv.as_index()] += 1;
+        }
+        assert!(counts[Move::Up.as_index()] > 4500);
+        assert!((200..650).contains(&counts[Move::Left.as_index()]));
+        assert!((200..650).contains(&counts[Move::Right.as_index()]));
+    }
+
+    #[test]
+    fn infeasible_challengers_and_short_snake_reversals_are_not_safe() {
+        use battlesnake_game_types::types::HazardSettableGame;
+        let (mut board, snake, _) = policy_fixture(Vec::new(), 100, false);
+        let head = board.get_head_as_position(&snake);
+        let neck = head.add_vec(Move::Down.to_vector());
+        assert!(!is_feasible_destination(&board, snake, neck, 100));
+        assert!(!is_feasible_destination(
+            &board,
+            snake,
+            Position::new(5, 11),
+            100
+        ));
+        let destination = head.add_vec(Move::Left.to_vector());
+        let native = board.native_from_position(destination);
+        board.set_hazard(native);
+        let damage = i64::from(board.get_hazard_damage());
+        assert!(!is_feasible_destination(
+            &board,
+            snake,
+            destination,
+            damage + 1
+        ));
+        assert!(is_feasible_destination(
+            &board,
+            snake,
+            destination,
+            damage + 2
+        ));
+        let node = Node::new_root(board);
+        let weights = &node.move_cache().policies[snake.as_usize()];
+        assert_eq!(weights[Move::Down.as_index()], 1);
+    }
+
+    #[test]
+    fn policy_weights_handle_off_board_forced_fallback() {
+        // A fallback list can contain an off-board move; use a top-edge snake from a fixture.
+        let mut game: Game =
+            serde_json::from_str(include_str!("../fixtures/turn33-food.json")).unwrap();
+        game.board.snakes.retain(|s| s.id == game.you.id);
+        game.you.head = Position::new(5, 10);
+        game.you.body = vec![game.you.head, Position::new(5, 9)].into();
+        game.board.snakes[0] = game.you.clone();
+        let ids = build_snake_id_map(&game);
+        let edge_board = game.as_cell_board(&ids).unwrap();
+        let snake = ids[&game.you.id];
+        let fallback: MoveArray = [Move::Up].into_iter().collect();
+        let all_moves = [(snake, fallback)].into_iter().collect();
+        let weights = opponent_move_weights(&edge_board, snake, fallback, &all_moves);
+        assert_eq!(weights[Move::Up.as_index()], 1);
     }
 
     #[test]
