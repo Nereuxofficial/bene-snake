@@ -11,15 +11,36 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
 
 /// Lightweight evaluation function optimized for MCTS
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
-    evaluate_board_with_length_weight(cellboard, you, 3)
+    evaluate_board_with_food_weight(cellboard, you, 3, 12)
 }
 
-/// Evaluate a board while varying the score assigned to each unit of snake length.
-/// All other terms match [`evaluate_board`]. This is exposed for offline tuning.
+/// Evaluate a board with a stronger food-distance term, independent of health.
+/// This is exposed so food-seeking weights can be compared in offline experiments.
+pub fn evaluate_board_with_food_weight(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    length_weight: i32,
+    food_distance_weight: i32,
+) -> u16 {
+    evaluate_board_impl(cellboard, you, length_weight, food_distance_weight, None)
+}
+
+/// Evaluate a board with the legacy low-health food term while varying the score
+/// assigned to each unit of snake length. Retained for offline baseline comparisons.
 pub fn evaluate_board_with_length_weight(
     cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
     length_weight: i32,
+) -> u16 {
+    evaluate_board_impl(cellboard, you, length_weight, 5, Some(40))
+}
+
+fn evaluate_board_impl(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    length_weight: i32,
+    food_distance_weight: i32,
+    food_health_threshold: Option<u8>,
 ) -> u16 {
     // Check if we're dead - return worst score
     if cellboard.get_health(you) == 0 {
@@ -45,8 +66,8 @@ pub fn evaluate_board_with_length_weight(
     let immediate_moves = cellboard.free_neighbors(head_native).count() as i32;
     score += immediate_moves * 25; // This is our proxy for area control
 
-    // 4. Food distance when hungry (simplified)
-    if health < 40 {
+    // 4. Food distance. The production scorer keeps this active at every health level.
+    if food_health_threshold.is_none_or(|threshold| health < threshold) {
         let head_pos = cellboard.get_head_as_position(you);
         let food_positions = cellboard.get_all_food_as_positions();
         if !food_positions.is_empty() {
@@ -56,8 +77,12 @@ pub fn evaluate_board_with_length_weight(
                 .min()
                 .unwrap_or(0);
 
-            let hunger_multiplier = if health < 20 { 10 } else { 5 };
-            score -= min_food_dist * hunger_multiplier;
+            let weight = if food_health_threshold.is_some() && health < 20 {
+                food_distance_weight * 2
+            } else {
+                food_distance_weight
+            };
+            score -= min_food_dist * weight;
         }
     }
 
@@ -104,6 +129,22 @@ mod tests {
     use super::*;
     use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
 
+    fn board_with_food(health: i32, food: Position) -> (CellBoard4Snakes11x11, SnakeId) {
+        let mut game: Game =
+            serde_json::from_str(include_str!("../fixtures/turn33-food.json")).unwrap();
+        game.you.health = health;
+        game.board
+            .snakes
+            .iter_mut()
+            .find(|snake| snake.id == game.you.id)
+            .unwrap()
+            .health = health;
+        game.board.food = vec![food];
+        let ids = build_snake_id_map(&game);
+        let you = ids[&game.you.id];
+        (game.as_cell_board(&ids).unwrap(), you)
+    }
+
     #[test]
     fn test_evaluate_dead_snake() {
         let game_fixture = include_str!("../../battlesnake-game-types/fixtures/start_of_game.json");
@@ -146,5 +187,33 @@ mod tests {
             "Start of game should have positive score, got {}",
             score
         );
+    }
+
+    #[test]
+    fn production_food_term_rewards_near_food_at_high_health() {
+        let (close_board, you) = board_with_food(80, Position::new(9, 9));
+        let (far_board, _) = board_with_food(80, Position::new(0, 0));
+
+        assert_eq!(
+            evaluate_board_with_length_weight(&close_board, &you, 3),
+            evaluate_board_with_length_weight(&far_board, &you, 3),
+            "the baseline evaluator ignores food above its low-health threshold"
+        );
+        assert!(
+            evaluate_board(&close_board, &you) > evaluate_board(&far_board, &you),
+            "the production evaluator should reward being closer to food at high health"
+        );
+    }
+
+    #[test]
+    fn production_food_term_is_stronger_than_baseline_when_hungry() {
+        let (close_board, you) = board_with_food(10, Position::new(9, 9));
+        let (far_board, _) = board_with_food(10, Position::new(0, 0));
+
+        let production_delta = i32::from(evaluate_board(&close_board, &you))
+            - i32::from(evaluate_board(&far_board, &you));
+        let baseline_delta = i32::from(evaluate_board_with_length_weight(&close_board, &you, 3))
+            - i32::from(evaluate_board_with_length_weight(&far_board, &you, 3));
+        assert!(production_delta > baseline_delta);
     }
 }

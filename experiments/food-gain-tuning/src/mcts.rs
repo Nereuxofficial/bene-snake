@@ -28,9 +28,6 @@ const MAX_TREE_DEPTH: usize = 64;
 // Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
 const WIN_REWARD: u32 = 1000;
 const LEAF_SCORE_HALF_REWARD: u32 = 1000;
-// Give food eaten along the sampled search path lasting value at live leaves.
-// Terminal wins still outrank every live result.
-const FOOD_GAIN_REWARD: u32 = 100;
 const UNIFORM_MOVE_PERCENT: u32 = 20;
 
 fn leaf_reward(score: u16) -> u32 {
@@ -273,63 +270,6 @@ pub struct Node {
     move_cache: OnceLock<NodeMoveCache>,
 }
 
-/// Children reachable after our issued move. The opponent's simultaneous move is not
-/// known until the next request, so retain the searched responses and match the full
-/// observed board then. Keeping only visited children avoids retaining an empty tree.
-pub struct SearchTreeCache {
-    candidates: Vec<Arc<Node>>,
-    you: SnakeId,
-    root_length: u16,
-}
-
-impl SearchTreeCache {
-    // A visit expands at most one node, so retained visits bound retained nodes.
-    const MAX_RETAINED_VISITS: u32 = 20_000;
-    const MAX_CANDIDATES: usize = 32;
-
-    pub fn after_move(root: &Arc<Node>, you: SnakeId, chosen: Move) -> Self {
-        let mut candidates: Vec<_> = root
-            .children
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(action, child)| {
-                action.into_inner()[you.as_usize()] == Some(chosen) && child.visits() > 0
-            })
-            .map(|(_, child)| Arc::clone(child))
-            .collect();
-        candidates.sort_unstable_by_key(|child| std::cmp::Reverse(child.visits()));
-        let mut retained_visits = 0u32;
-        candidates.retain(|child| {
-            if retained_visits.saturating_add(child.visits()) > Self::MAX_RETAINED_VISITS {
-                return false;
-            }
-            retained_visits += child.visits();
-            true
-        });
-        candidates.truncate(Self::MAX_CANDIDATES);
-        Self {
-            candidates,
-            you,
-            root_length: root.board.get_length(&you),
-        }
-    }
-
-    pub fn candidate_count(&self) -> usize {
-        self.candidates.len()
-    }
-
-    pub fn match_observed(self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Option<Arc<Node>> {
-        // Old reward samples use the former root's length as their food-gain baseline.
-        if you != self.you || board.get_length(&you) != self.root_length {
-            return None;
-        }
-        self.candidates
-            .into_iter()
-            .find(|child| child.board == *board)
-    }
-}
-
 struct NodeMoveCache {
     moves: ArrayVec<(SnakeId, MoveArray), 4>,
     policies: [[u8; 4]; 4],
@@ -339,15 +279,10 @@ struct NodeMoveCache {
 }
 
 impl Node {
-    pub fn visits(&self) -> u32 {
-        self.visits.load(Ordering::Relaxed)
-    }
-
     pub fn new_root(board: CellBoard4Snakes11x11) -> Self {
-        Self::new_root_with_food_gain_reward(board, FOOD_GAIN_REWARD)
+        Self::new_root_with_food_gain_reward(board, 0)
     }
 
-    /// Override the food-gain reward for controlled search experiments.
     pub fn new_root_with_food_gain_reward(
         board: CellBoard4Snakes11x11,
         food_gain_reward: u32,
@@ -357,7 +292,7 @@ impl Node {
 
     /// Construct a root with food guidance configurable for controlled search experiments.
     pub fn new_root_with_food_guidance(board: CellBoard4Snakes11x11, food_guidance: bool) -> Self {
-        Self::new_root_with_food_guidance_and_reward(board, food_guidance, FOOD_GAIN_REWARD)
+        Self::new_root_with_food_guidance_and_reward(board, food_guidance, 0)
     }
 
     fn new_root_with_food_guidance_and_reward(
@@ -687,39 +622,6 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("valid board");
         (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
-    }
-
-    #[test]
-    fn tree_cache_reuses_only_an_exact_same_length_child() {
-        let (board, you, _) = turn33();
-        let root = Arc::new(Node::new_root(board));
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(19);
-        let mut stats = SearchDepthStats::default();
-        for _ in 0..500 {
-            search_iteration(&root, &you, &mut rng, &mut stats);
-        }
-        let (action, child) = root
-            .children
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(_, child)| child.visits() > 0)
-            .map(|(action, child)| (*action, Arc::clone(child)))
-            .expect("search should revisit an expanded child");
-        let chosen = action.into_inner()[you.as_usize()].unwrap();
-        let cache = SearchTreeCache::after_move(&root, you, chosen);
-        assert!(cache.candidate_count() > 0);
-        assert!(cache.match_observed(&board, you).is_none());
-
-        let cache = SearchTreeCache::after_move(&root, you, chosen);
-        assert!(Arc::ptr_eq(
-            &cache.match_observed(&child.board, you).unwrap(),
-            &child
-        ));
-
-        let mut cache = SearchTreeCache::after_move(&root, you, chosen);
-        cache.root_length = cache.root_length.saturating_add(1);
-        assert!(cache.match_observed(&child.board, you).is_none());
     }
 
     fn policy_fixture(

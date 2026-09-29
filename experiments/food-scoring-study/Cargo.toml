@@ -1,0 +1,19 @@
+[package]
+name = "bene-food-scoring-study"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+lib = { path = "../../lib" }
+gym = { path = "../../gym" }
+battlesnake-game-types = { path = "../../battlesnake-game-types" }
+arrayvec = "0.7.8"
+rand = "0.10.3"
+tracing = "0.1.44"
+serde_json = "1.0.151"
+
+[profile.release]
+opt-level = 3
+codegen-units = 16
