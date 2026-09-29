@@ -346,7 +346,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
                 .unwrap_or(15) as u8,
         })
     }
-    fn get_cell(&self, cell_index: CellIndex<T>) -> Cell<T> {
+    pub(crate) fn get_cell(&self, cell_index: CellIndex<T>) -> Cell<T> {
         self.cells[cell_index.0.as_usize()]
     }
 

@@ -9,19 +9,23 @@ use std::{
 use arrayvec::ArrayVec;
 use battlesnake_game_types::{
     compact_representation::CellIndex,
-    compact_representation::standard::CellBoard4Snakes11x11,
+    compact_representation::standard::{CellBoard4Snakes11x11, MoveTarget},
     types::{
         Action, FoodGettableGame, FoodQueryableGame, HazardQueryableGame, HeadGettableGame,
-        HealthGettableGame, LengthGettableGame, Move, MoveArray, NeckQueryableGame,
-        PositionGettableGame, RandomReasonableMovesGame, ReasonableMovesGame, SizeDeterminableGame,
-        SnakeId, VictorDeterminableGame,
+        HealthGettableGame, LengthGettableGame, Move, N_MOVES, NeckQueryableGame,
+        PositionGettableGame, RandomReasonableMovesGame, SnakeId, VictorDeterminableGame,
     },
     wire_representation::Position,
 };
-use rand::{Rng, RngExt, seq::IndexedRandom};
+use rand::{Rng, RngExt};
 
 use crate::eval::evaluate_board;
 use tracing::info;
+
+#[cfg(test)]
+use battlesnake_game_types::{
+    compact_representation::standard::moves_from_mask, types::MoveArray, types::ReasonableMovesGame,
+};
 
 const MAX_ROLLOUT_DEPTH: u32 = 24;
 const MAX_TREE_DEPTH: usize = 64;
@@ -57,22 +61,75 @@ struct MovePolicy {
     losing_head_contests: u8,
 }
 
+/// Everything one snake's policy needs that does not depend on which snake is asking. A board
+/// is fixed for a whole node, so this is read once per board instead of once per policy.
+#[derive(Clone, Copy)]
+struct SnakeFacts {
+    health: i64,
+    length: i64,
+    head: Position,
+    head_index: CellIndex<u8>,
+    /// Bit `Move::as_index()` is set for every reasonable move.
+    legal_mask: u8,
+}
+
+/// Iterate the moves encoded in a mask, in ascending `Move::as_index()` order.
+fn mask_bits(mask: u8) -> impl Iterator<Item = Move> {
+    (0..N_MOVES)
+        .filter(move |index| mask & (1 << index) != 0)
+        .map(Move::from_index)
+}
+
+/// Collect the per-snake facts for a board, indexed by `SnakeId`. Dead snakes keep zeroed facts
+/// and are never consulted: callers iterate the living snakes they were given.
+fn snake_facts_from_masks(
+    board: &CellBoard4Snakes11x11,
+    masks: &ArrayVec<(SnakeId, u8), 4>,
+) -> [SnakeFacts; 4] {
+    let mut facts = [SnakeFacts {
+        health: 0,
+        length: 0,
+        head: Position { x: 0, y: 0 },
+        head_index: CellIndex::from_usize(0),
+        legal_mask: 0,
+    }; 4];
+    for (id, mask) in masks {
+        let index = id.as_usize();
+        facts[index] = SnakeFacts {
+            health: board.get_health_i64(id),
+            length: board.get_length_i64(id),
+            head: board.get_head_as_position(id),
+            head_index: board.get_head_as_native_position(id),
+            legal_mask: *mask,
+        };
+    }
+    facts
+}
+
+#[cfg(test)]
+fn snake_facts(board: &CellBoard4Snakes11x11) -> [SnakeFacts; 4] {
+    snake_facts_from_masks(board, &board.reasonable_move_masks())
+}
+
 /// Build one cached small-integer policy per snake from the state before any moves are chosen.
 /// The score is deliberately simple: all legal moves start with support, then safe mobility and
 /// food progress add weight, while likely losing head contests reduce it. The
 /// `losing_head_contests` mask is the same tactical check the tree uses to prune our own moves.
 fn move_policy(
     board: &CellBoard4Snakes11x11,
+    facts: &[SnakeFacts; 4],
     snake: SnakeId,
-    legal: MoveArray,
-    all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
+    legal: u8,
     food: &[Position],
     food_guidance: bool,
 ) -> MovePolicy {
-    let head = board.get_head_as_position(&snake);
-    let health = board.get_health_i64(&snake);
-    let length = board.get_length_i64(&snake);
-    let nearest_food = food.iter().map(|pos| manhattan(head, *pos)).min();
+    let SnakeFacts {
+        health,
+        length,
+        head,
+        head_index,
+        ..
+    } = facts[snake.as_usize()];
     let food_is_urgent = health <= 50;
     let mut policy = MovePolicy {
         weights: [0; 4],
@@ -80,36 +137,94 @@ fn move_policy(
         losing_head_contests: 0,
     };
 
-    for mv in legal {
-        let destination = head.add_vec(mv.to_vector());
-        let off_board = board.off_board(destination);
-        let native = (!off_board).then(|| board.native_from_position(destination));
-        // The native position must only be inspected after validating bounds: when every
+    // A single pass over the food list finds the nearest food and, for that nearest food only,
+    // which directions shorten the distance to it. The previous code scanned the whole food list
+    // once for the head and once again for every legal move.
+    let mut nearest_food = u32::MAX;
+    let mut food_progress_mask = 0u8;
+    for pos in food {
+        let dx = pos.x - head.x;
+        let dy = pos.y - head.y;
+        let distance = dx.unsigned_abs() + dy.unsigned_abs();
+        if distance > nearest_food {
+            continue;
+        }
+        if distance < nearest_food {
+            nearest_food = distance;
+            food_progress_mask = 0;
+        }
+        if dx > 0 {
+            food_progress_mask |= 1 << Move::Right.as_index();
+        } else if dx < 0 {
+            food_progress_mask |= 1 << Move::Left.as_index();
+        }
+        if dy > 0 {
+            food_progress_mask |= 1 << Move::Up.as_index();
+        } else if dy < 0 {
+            food_progress_mask |= 1 << Move::Down.as_index();
+        }
+    }
+    let makes_food_progress = |mv: &Move| food_progress_mask & (1 << mv.as_index()) != 0;
+
+    // Which of our destinations each qualifying opponent could also enter. The opponent's head
+    // is fixed, so the adjacency test runs once here instead of once per move per opponent.
+    // Offsets are plain integers: a destination is one step from our own head, so an opponent
+    // more than two steps away cannot contest anything.
+    let mut contests: [(SnakeId, i64, u8); 4] = [(SnakeId(0), 0, 0); 4];
+    let mut contest_count = 0;
+    for (index, other) in facts.iter().enumerate() {
+        if index == snake.as_usize() || other.health == 0 || other.length < length {
+            continue;
+        }
+        let (ox, oy) = (other.head.x - head.x, other.head.y - head.y);
+        if ox.abs() + oy.abs() > 2 {
+            continue;
+        }
+        let mut contested = 0u8;
+        for mv in Move::all() {
+            // The opponent reaches our destination when the destination is one step from its
+            // head, which is one step from ours in the opposite direction.
+            let (dx, dy) = (ox - mv.dx(), oy - mv.dy());
+            if dx.abs() + dy.abs() != 1 {
+                continue;
+            }
+            let approach = if dx == 1 {
+                Move::Left
+            } else if dx == -1 {
+                Move::Right
+            } else if dy == 1 {
+                Move::Down
+            } else {
+                Move::Up
+            };
+            if other.legal_mask & (1 << approach.as_index()) != 0 {
+                contested |= 1 << mv.as_index();
+            }
+        }
+        if contested != 0 {
+            contests[contest_count] = (SnakeId(index as u8), other.health, contested);
+            contest_count += 1;
+        }
+    }
+
+    for mv in mask_bits(legal) {
+        let target = board.describe_move(snake, head_index, mv);
+        // The destination must only be inspected after validating bounds: when every
         // direction is blocked the simulator's conventional fallback is Up, even off-board.
-        let has_food = native.as_ref().is_some_and(|pos| board.is_food(pos));
-        let immediate_hazard_death = native.as_ref().is_some_and(|pos| {
-            board.is_hazard(pos) && health <= 1 + i64::from(board.get_hazard_damage()) && !has_food
-        });
+        let has_food = target.is_food;
+        let immediate_hazard_death =
+            target.is_hazard && health <= 1 + i64::from(board.get_hazard_damage()) && !has_food;
         let starvation_death = health <= 1 && !has_food;
-        let reverses_into_neck = native
-            .as_ref()
-            .is_some_and(|pos| board.is_neck(&snake, pos));
         let dies_immediately =
-            off_board || immediate_hazard_death || starvation_death || reverses_into_neck;
+            !target.on_board || immediate_hazard_death || starvation_death || target.is_own_neck;
 
         let mut weight = 4u8;
         if dies_immediately {
             weight = 1;
         } else {
-            let mobility =
-                board.free_neighbor_count(CellIndex::new(destination, board.get_width() as u8));
-            weight += mobility * 2;
-            let makes_food_progress = nearest_food.is_some_and(|distance| {
-                food.iter()
-                    .map(|pos| manhattan(destination, *pos))
-                    .min()
-                    .is_some_and(|next| next < distance)
-            });
+            // Mobility is only scored for surviving moves, so read it lazily rather than
+            // inside `describe_move` where a fatal move would pay for four cell reads.
+            weight += board.free_neighbor_count(target.destination) * 2;
             if food_guidance {
                 if has_food {
                     weight += if health <= 20 {
@@ -119,7 +234,7 @@ fn move_policy(
                     } else {
                         4
                     };
-                } else if makes_food_progress {
+                } else if makes_food_progress(&mv) {
                     weight += if health <= 20 {
                         5
                     } else if food_is_urgent {
@@ -130,7 +245,7 @@ fn move_policy(
                 }
             } else if food_is_urgent && has_food {
                 weight += 8;
-            } else if food_is_urgent && makes_food_progress {
+            } else if food_is_urgent && makes_food_progress(&mv) {
                 weight += 3;
             }
         }
@@ -139,27 +254,13 @@ fn move_policy(
         // entering the same square both grow together, so comparing the pre-move lengths
         // here is equivalent. Food still matters because `is_feasible_destination` only
         // keeps a low-health opponent alive when the shared square is food.
-        let shared_losing_destination = all_moves.iter().any(|(other, other_legal)| {
-            if *other == snake || board.get_length_i64(other) < length {
-                return false;
-            }
-            let other_health = board.get_health_i64(other);
-            let other_head = board.get_head_as_position(other);
-            if manhattan(other_head, destination) != 1 {
-                return false;
-            }
-            let approach = if other_head.x < destination.x {
-                Move::Right
-            } else if other_head.x > destination.x {
-                Move::Left
-            } else if other_head.y < destination.y {
-                Move::Up
-            } else {
-                Move::Down
-            };
-            other_legal.contains(&approach)
-                && is_feasible_destination(board, *other, destination, other_health)
-        });
+        let shared_losing_destination = target.on_board
+            && contests[..contest_count]
+                .iter()
+                .any(|(other, health, contested)| {
+                    contested & (1 << mv.as_index()) != 0
+                        && is_feasible_destination(board, *other, target, *health)
+                });
         if shared_losing_destination {
             policy.losing_head_contests |= 1 << mv.as_index();
             weight = (weight / 4).max(1);
@@ -173,80 +274,77 @@ fn move_policy(
 /// Keep only the reasonable moves that do not lose a head-to-head. When every move is
 /// contested, fall back to the full reasonable set so search retains a nonempty candidate
 /// set and can compare those unavoidable risks.
-fn pruned_tree_moves(legal: MoveArray, losing_head_contests: u8) -> MoveArray {
-    let kept: MoveArray = legal
-        .into_iter()
-        .filter(|mv| losing_head_contests & (1 << mv.as_index()) == 0)
-        .collect();
-    if kept.is_empty() { legal } else { kept }
+fn pruned_tree_mask(legal: u8, losing_head_contests: u8) -> u8 {
+    let kept = legal & !losing_head_contests;
+    if kept == 0 { legal } else { kept }
 }
 
 #[cfg(test)]
-fn move_weights(
-    board: &CellBoard4Snakes11x11,
-    snake: SnakeId,
-    legal: MoveArray,
-    all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
-) -> [u8; 4] {
+fn move_weights(board: &CellBoard4Snakes11x11, snake: SnakeId, legal: MoveArray) -> [u8; 4] {
     let food = board.get_all_food_as_positions();
-    move_policy(board, snake, legal, all_moves, &food, true).weights
+    let mask = legal.iter().fold(0u8, |mask, mv| mask | 1 << mv.as_index());
+    move_policy(board, &snake_facts(board), snake, mask, &food, true).weights
 }
 
+/// Whether `snake` would survive entering `target` on the next turn. The caller guarantees
+/// `target` is one of that snake's head neighbors, so only the free-cell rule, the neck, and the
+/// health/hazard budget are left to check. Reading those flags off the target avoids rescanning
+/// the head's neighbors, which cost four cell reads per candidate challenger.
 fn is_feasible_destination(
     board: &CellBoard4Snakes11x11,
     snake: SnakeId,
-    destination: Position,
+    target: MoveTarget<u8>,
     health: i64,
 ) -> bool {
-    if board.off_board(destination) {
+    if !target.on_board || board.is_neck(&snake, &target.destination) {
         return false;
     }
-    let native = board.native_from_position(destination);
-    if board.is_neck(&snake, &native) {
-        return false;
-    }
-    let can_enter = board
-        .free_neighbors(CellIndex::new(
-            board.get_head_as_position(&snake),
-            board.get_width() as u8,
-        ))
-        .any(|neighbor| neighbor == native);
-    let food = board.is_food(&native);
-    let hazard_damage = if board.is_hazard(&native) {
+    let hazard_damage = if target.is_hazard {
         board.get_hazard_damage()
     } else {
         0
     };
-    can_enter && (food || health > 1 + i64::from(hazard_damage))
+    board.cell_is_free(target.destination)
+        && (target.is_food || health > 1 + i64::from(hazard_damage))
 }
 
-fn manhattan(left: Position, right: Position) -> u32 {
-    left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
-}
+/// Sample one move from `mask`, whose set bits are `Move::as_index()` values. Bit order is
+/// ascending, so the choice depends only on the mask, never on how the list was built.
+fn sample_policy_move(mask: u8, weights: [u8; 4], total_weight: u32, rng: &mut impl Rng) -> Move {
+    let count = mask.count_ones();
+    if count == 0 {
+        return Move::Up;
+    }
+    // One draw feeds both the uniform gate and the pick, so a sampled move costs one RNG call
+    // instead of two. The high bits gate, the low bits index.
+    let draw = rng.random::<u32>();
+    let (gate, pick) = (draw >> 16, draw & 0xFFFF);
 
-fn sample_policy_move(
-    moves: MoveArray,
-    weights: [u8; 4],
-    total_weight: u32,
-    rng: &mut impl Rng,
-) -> Move {
     // A 20% uniform component keeps every reasonable move possible; the rest follows the cached
     // weighted policy. This avoids a softmax and keeps sampling allocation-free.
-    if rng.random_range(0..100) < UNIFORM_MOVE_PERCENT {
-        return moves.choose(rng).copied().unwrap_or(Move::Up);
+    let uniform = gate % 100 < UNIFORM_MOVE_PERCENT || total_weight == 0;
+    if uniform {
+        let mut remaining = mask;
+        let mut index = (pick * count) >> 16;
+        while index > 0 {
+            remaining &= remaining - 1;
+            index -= 1;
+        }
+        return Move::from_index(remaining.trailing_zeros() as usize);
     }
-    if total_weight == 0 {
-        return moves.choose(rng).copied().unwrap_or(Move::Up);
-    }
-    let mut sample = rng.random_range(0..total_weight);
-    for mv in moves {
+
+    let mut sample = (pick * total_weight) >> 16;
+    let mut remaining = mask;
+    while remaining != 0 {
+        let mv = Move::from_index(remaining.trailing_zeros() as usize);
+        remaining &= remaining - 1;
         let weight = u32::from(weights[mv.as_index()]);
         if sample < weight {
             return mv;
         }
         sample -= weight;
     }
-    Move::Up
+    Move::from_index(mask.trailing_zeros() as usize)
 }
 
 fn sample_rollout_moves(
@@ -258,14 +356,15 @@ fn sample_rollout_moves(
     if !food_guidance {
         return board.random_reasonable_move_for_each_snake(rng).collect();
     }
-    let legal_moves = board.reasonable_moves_for_each_snake();
-    legal_moves
+    let masks = board.reasonable_move_masks();
+    let facts = snake_facts_from_masks(board, &masks);
+    masks
         .iter()
-        .map(|(snake, moves)| {
-            let policy = move_policy(board, *snake, *moves, &legal_moves, food, true);
+        .map(|(snake, mask)| {
+            let policy = move_policy(board, &facts, *snake, *mask, food, true);
             (
                 *snake,
-                sample_policy_move(*moves, policy.weights, policy.total_weight, rng),
+                sample_policy_move(*mask, policy.weights, policy.total_weight, rng),
             )
         })
         .collect()
@@ -356,12 +455,14 @@ impl SearchTreeCache {
 }
 
 struct NodeMoveCache {
-    moves: ArrayVec<(SnakeId, MoveArray), 4>,
+    /// Reasonable-move masks, shared with opponents and rollouts. The tree no longer selects
+    /// from this directly; it is the fallback when pruning contests all moves.
+    masks: ArrayVec<(SnakeId, u8), 4>,
     policies: [[u8; 4]; 4],
     policy_totals: [u32; 4],
-    /// Fixed-size, per-snake tree candidate lists with losing head-to-head contests
-    /// removed. Only `you` ever reads its entry; opponents keep sampling `moves`.
-    tree_moves: [MoveArray; 4],
+    /// Per-snake tree candidate masks with losing head-to-head contests removed. Only `you`
+    /// ever reads its entry; opponents keep sampling `masks`.
+    tree_masks: [u8; 4],
 }
 
 impl Node {
@@ -420,23 +521,24 @@ impl Node {
 
     fn move_cache(&self) -> &NodeMoveCache {
         self.move_cache.get_or_init(|| {
-            let moves = self.board.reasonable_moves_for_each_snake();
+            let masks = self.board.reasonable_move_masks();
+            let facts = snake_facts_from_masks(&self.board, &masks);
             let food = self.board.get_all_food_as_positions();
             let mut policies = [[0; 4]; 4];
             let mut policy_totals = [0; 4];
-            let mut tree_moves = [MoveArray::new(); 4];
-            for (id, legal) in &moves {
+            let mut tree_masks = [0u8; 4];
+            for (id, mask) in &masks {
                 let policy =
-                    move_policy(&self.board, *id, *legal, &moves, &food, self.food_guidance);
+                    move_policy(&self.board, &facts, *id, *mask, &food, self.food_guidance);
                 policies[id.as_usize()] = policy.weights;
                 policy_totals[id.as_usize()] = policy.total_weight;
-                tree_moves[id.as_usize()] = pruned_tree_moves(*legal, policy.losing_head_contests);
+                tree_masks[id.as_usize()] = pruned_tree_mask(*mask, policy.losing_head_contests);
             }
             NodeMoveCache {
-                moves,
+                masks,
                 policies,
                 policy_totals,
-                tree_moves,
+                tree_masks,
             }
         })
     }
@@ -454,35 +556,39 @@ impl Node {
     /// The full reasonable move set, shared with opponents and rollouts. The tree no
     /// longer selects from this directly; it is the fallback when pruning contests all moves.
     #[cfg(test)]
-    fn legal_own_moves(&self, you: SnakeId) -> Option<battlesnake_game_types::types::MoveArray> {
+    fn legal_own_moves(&self, you: SnakeId) -> Option<MoveArray> {
         self.move_cache()
-            .moves
+            .masks
             .iter()
-            .copied()
             .find(|(id, _)| *id == you)
-            .map(|(_, moves)| moves)
+            .map(|(_, mask)| moves_from_mask(*mask))
     }
 
-    /// Our tree candidate moves: reasonable moves minus losing head-to-head contests.
-    /// Returns `None` only when `you` has no reasonable moves (for example, a dead snake).
+    /// The tree candidate set as a list, for tests that assert on move membership.
+    #[cfg(test)]
     fn tree_own_moves(&self, you: SnakeId) -> Option<MoveArray> {
+        self.tree_own_mask(you).map(moves_from_mask)
+    }
+
+    /// Our tree candidate mask: reasonable moves minus losing head-to-head contests.
+    /// Returns `None` only when `you` has no reasonable moves (for example, a dead snake).
+    fn tree_own_mask(&self, you: SnakeId) -> Option<u8> {
         let cache = self.move_cache();
         cache
-            .moves
+            .masks
             .iter()
             .any(|(id, _)| *id == you)
-            .then(|| cache.tree_moves[you.as_usize()])
+            .then(|| cache.tree_masks[you.as_usize()])
     }
 
     fn select_own_move(&self, you: SnakeId, exploration: f64) -> Option<Move> {
-        let moves = self.tree_own_moves(you)?;
+        let mask = self.tree_own_mask(you)?;
         let policy = self.move_cache().policies[you.as_usize()];
-        let prior_total: u32 = moves
-            .iter()
+        let prior_total: u32 = mask_bits(mask)
             .map(|mv| u32::from(policy[mv.as_index()]))
             .sum();
         let parent_visits = self.visits.load(Ordering::Relaxed) as f64;
-        moves.into_iter().max_by(|left, right| {
+        mask_bits(mask).max_by(|left, right| {
             let value = |mv: &Move| {
                 let stats = &self.own_moves[mv.as_index()];
                 let visits = stats.visits.load(Ordering::Relaxed) as f64;
@@ -506,9 +612,9 @@ impl Node {
     /// Choose only bene-snake's move. Opponent responses are averaged through visits.
     /// Only uncontested tree candidates are considered.
     pub fn best_move(&self, you: SnakeId) -> Option<Move> {
-        let moves = self.tree_own_moves(you)?;
+        let mask = self.tree_own_mask(you)?;
         let policy = self.move_cache().policies[you.as_usize()];
-        moves.into_iter().max_by(|left, right| {
+        mask_bits(mask).max_by(|left, right| {
             let stats = |mv: &Move| &self.own_moves[mv.as_index()];
             let left_visits = stats(left).visits.load(Ordering::Relaxed);
             let right_visits = stats(right).visits.load(Ordering::Relaxed);
@@ -537,14 +643,14 @@ impl Node {
     ) -> ArrayVec<(SnakeId, Move), 4> {
         let cache = self.move_cache();
         cache
-            .moves
+            .masks
             .iter()
-            .map(|(id, moves)| {
+            .map(|(id, mask)| {
                 let mv = if *id == you {
                     own_move
                 } else {
                     sample_policy_move(
-                        *moves,
+                        *mask,
                         cache.policies[id.as_usize()],
                         cache.policy_totals[id.as_usize()],
                         rng,
@@ -1092,43 +1198,45 @@ mod tests {
         let node = Node::new_root(board);
         let cache = node.move_cache();
 
-        // The sampling lists used by opponents and rollouts are untouched by pruning.
+        // The sampling masks used by opponents and rollouts are untouched by pruning.
         for (id, legal) in &full {
             let cached = cache
-                .moves
+                .masks
                 .iter()
                 .find(|(cached_id, _)| cached_id == id)
-                .map(|(_, moves)| moves)
+                .map(|(_, mask)| *mask)
                 .unwrap();
-            assert_eq!(cached.as_slice(), legal.as_slice());
+            let expected = legal.iter().fold(0u8, |mask, mv| mask | 1 << mv.as_index());
+            assert_eq!(cached, expected);
         }
         assert!(
-            !cache.tree_moves[you.as_usize()].contains(&Move::Up),
-            "our tree list must be pruned"
+            cache.tree_masks[you.as_usize()] & (1 << Move::Up.as_index()) == 0,
+            "our tree mask must be pruned"
         );
         let cached_opponent = cache
-            .moves
+            .masks
             .iter()
             .find(|(id, _)| *id == opponent)
-            .map(|(_, moves)| moves)
+            .map(|(_, mask)| *mask)
             .unwrap();
         assert!(
-            cached_opponent.contains(&Move::Down),
-            "the opponent's full move list still contains the contested move"
+            cached_opponent & (1 << Move::Down.as_index()) != 0,
+            "the opponent's full move mask still contains the contested move"
         );
 
-        // Opponent sampling consumes the same full list with the same policy weights.
-        let opponent_legal = full
+        // Opponent sampling consumes the same full mask with the same policy weights.
+        let opponent_mask = cache
+            .masks
             .iter()
             .find(|(id, _)| *id == opponent)
-            .map(|(_, moves)| *moves)
+            .map(|(_, mask)| *mask)
             .unwrap();
         let mut joint_rng = rand::rngs::SmallRng::seed_from_u64(7);
         let mut expected_rng = rand::rngs::SmallRng::seed_from_u64(7);
         let joint = node.sample_joint_action(you, Move::Left, &mut joint_rng);
         let sampled = joint.iter().find(|(id, _)| *id == opponent).unwrap().1;
         let expected = sample_policy_move(
-            opponent_legal,
+            opponent_mask,
             cache.policies[opponent.as_usize()],
             cache.policy_totals[opponent.as_usize()],
             &mut expected_rng,
@@ -1332,7 +1440,7 @@ mod tests {
         let (board, snake, _) = policy_fixture(vec![food_pos], 1, false);
         let moves = board.reasonable_moves_for_each_snake();
         let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
-        let weights = move_weights(&board, snake, legal, &moves);
+        let weights = move_weights(&board, snake, legal);
         assert!(weights[Move::Left.as_index()] > weights[Move::Right.as_index()]);
         assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
     }
@@ -1432,7 +1540,7 @@ mod tests {
         let (board, snake, _) = policy_fixture(Vec::new(), 100, true);
         let moves = board.reasonable_moves_for_each_snake();
         let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
-        let weights = move_weights(&board, snake, legal, &moves);
+        let weights = move_weights(&board, snake, legal);
         assert!(legal.contains(&Move::Up));
         assert!(weights[Move::Up.as_index()] < weights[Move::Left.as_index()]);
         assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
@@ -1443,26 +1551,25 @@ mod tests {
         let (board, snake, _) = policy_fixture(Vec::new(), 100, false);
         let moves = board.reasonable_moves_for_each_snake();
         let legal = moves.iter().find(|(id, _)| *id == snake).unwrap().1;
-        let weights = move_weights(&board, snake, legal, &moves);
+        let weights = move_weights(&board, snake, legal);
         assert!(legal.iter().all(|mv| weights[mv.as_index()] > 0));
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(31);
-        assert_eq!(
-            sample_policy_move(MoveArray::new(), [0; 4], 0, &mut rng),
-            Move::Up
-        );
+        assert_eq!(sample_policy_move(0, [0; 4], 0, &mut rng), Move::Up);
     }
 
     #[test]
     fn uniform_component_keeps_zero_weight_moves_sampleable() {
-        let moves: MoveArray = [Move::Up, Move::Left, Move::Right].into_iter().collect();
+        let mask: u8 = [Move::Up, Move::Left, Move::Right]
+            .iter()
+            .fold(0, |mask, mv| mask | 1 << mv.as_index());
         let mut weights = [0; 4];
         weights[Move::Up.as_index()] = 20;
         let mut rng = rand::rngs::SmallRng::seed_from_u64(44);
         let mut counts = [0; 4];
         for _ in 0..6000 {
-            let mv = sample_policy_move(moves, weights, 20, &mut rng);
-            assert!(moves.contains(&mv));
+            let mv = sample_policy_move(mask, weights, 20, &mut rng);
+            assert!(mask & (1 << mv.as_index()) != 0);
             counts[mv.as_index()] += 1;
         }
         assert!(counts[Move::Up.as_index()] > 4500);
@@ -1470,17 +1577,44 @@ mod tests {
         assert!((200..650).contains(&counts[Move::Right.as_index()]));
     }
 
+    /// Build the target for an arbitrary cell, so the feasibility check can be exercised on
+    /// off-board and non-adjacent squares that `describe_move` never produces.
+    fn target_at(board: &CellBoard4Snakes11x11, position: Position) -> MoveTarget<u8> {
+        if board.off_board(position) {
+            return MoveTarget {
+                destination: CellIndex::from_usize(0),
+                on_board: false,
+                is_food: false,
+                is_hazard: false,
+                is_own_neck: false,
+            };
+        }
+        let native = board.native_from_position(position);
+        MoveTarget {
+            destination: native,
+            on_board: true,
+            is_food: board.is_food(&native),
+            is_hazard: board.is_hazard(&native),
+            is_own_neck: false,
+        }
+    }
+
     #[test]
-    fn infeasible_challengers_and_short_snake_reversals_are_not_safe() {
+    fn infeasible_challengers_and_short_snake_reversions_are_not_safe() {
         use battlesnake_game_types::types::HazardSettableGame;
         let (mut board, snake, _) = policy_fixture(Vec::new(), 100, false);
         let head = board.get_head_as_position(&snake);
         let neck = head.add_vec(Move::Down.to_vector());
-        assert!(!is_feasible_destination(&board, snake, neck, 100));
         assert!(!is_feasible_destination(
             &board,
             snake,
-            Position::new(5, 11),
+            target_at(&board, neck),
+            100
+        ));
+        assert!(!is_feasible_destination(
+            &board,
+            snake,
+            target_at(&board, Position::new(5, 11)),
             100
         ));
         let destination = head.add_vec(Move::Left.to_vector());
@@ -1490,13 +1624,13 @@ mod tests {
         assert!(!is_feasible_destination(
             &board,
             snake,
-            destination,
+            target_at(&board, destination),
             damage + 1
         ));
         assert!(is_feasible_destination(
             &board,
             snake,
-            destination,
+            target_at(&board, destination),
             damage + 2
         ));
         let node = Node::new_root(board);
@@ -1517,8 +1651,7 @@ mod tests {
         let edge_board = game.as_cell_board(&ids).unwrap();
         let snake = ids[&game.you.id];
         let fallback: MoveArray = [Move::Up].into_iter().collect();
-        let all_moves = [(snake, fallback)].into_iter().collect();
-        let weights = move_weights(&edge_board, snake, fallback, &all_moves);
+        let weights = move_weights(&edge_board, snake, fallback);
         assert_eq!(weights[Move::Up.as_index()], 1);
     }
 

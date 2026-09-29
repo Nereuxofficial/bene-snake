@@ -83,8 +83,16 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         (action, Self { embedded })
     }
 
+    /// True when a snake could legally move into this cell on the next turn: the cell is not
+    /// another head and is either empty or occupied by a tail that vacates this turn.
+    #[inline]
+    pub fn cell_is_free(&self, pos: CellIndex<T>) -> bool {
+        let cell = self.embedded.get_cell(pos);
+        !cell.is_head() && (!cell.is_body() || self.embedded.cell_is_single_tail(pos))
+    }
+
     /// Return the surrounding fields not immediately blocked
-    pub fn free_neighbors(&self, pos: CellIndex<u8>) -> impl Iterator<Item = CellIndex<T>> + '_ {
+    pub fn free_neighbors(&self, pos: CellIndex<T>) -> impl Iterator<Item = CellIndex<T>> + '_ {
         let width = self.embedded.get_actual_width();
         let head_pos = pos.into_position(width);
 
@@ -95,13 +103,130 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
 
                 (new_head, ci)
             })
-            .filter(move |(new_head, ci)| {
-                !self.off_board(*new_head)
-                    && (!self.embedded.cell_is_body(*ci) || self.embedded.cell_is_single_tail(*ci))
-                    && !self.embedded.cell_is_snake_head(*ci)
-            })
+            .filter(move |(new_head, ci)| !self.off_board(*new_head) && self.cell_is_free(*ci))
             .map(|(_, ci)| ci)
     }
+
+    /// Count free adjacent cells for a valid board cell without constructing positions.
+    #[inline]
+    pub fn free_neighbor_count(&self, pos: CellIndex<T>) -> u8 {
+        let width = usize::from(self.embedded.get_actual_width());
+        let height = usize::from(self.embedded.get_actual_height());
+        let center = pos.as_usize();
+        let x = center % width;
+        let mut count = 0;
+        if x > 0 {
+            count += u8::from(self.cell_is_free(CellIndex::from_usize(center - 1)));
+        }
+        if x + 1 < width {
+            count += u8::from(self.cell_is_free(CellIndex::from_usize(center + 1)));
+        }
+        if center >= width {
+            count += u8::from(self.cell_is_free(CellIndex::from_usize(center - width)));
+        }
+        if center + width < width * height {
+            count += u8::from(self.cell_is_free(CellIndex::from_usize(center + width)));
+        }
+        count
+    }
+
+    /// Bit `Move::as_index()` is set for every move that does not immediately kill the snake at
+    /// `head`. Computed straight from cell indices, so callers that only need the mask never
+    /// build positions.
+    #[inline]
+    pub fn reasonable_move_mask(&self, head: CellIndex<T>) -> u8 {
+        let width = usize::from(self.embedded.get_actual_width());
+        let height = usize::from(self.embedded.get_actual_height());
+        let center = head.as_usize();
+        let x = center % width;
+        let mut mask = 0u8;
+        if x > 0 && self.cell_is_free(CellIndex::from_usize(center - 1)) {
+            mask |= 1 << Move::Left.as_index();
+        }
+        if x + 1 < width && self.cell_is_free(CellIndex::from_usize(center + 1)) {
+            mask |= 1 << Move::Right.as_index();
+        }
+        if center >= width && self.cell_is_free(CellIndex::from_usize(center - width)) {
+            mask |= 1 << Move::Down.as_index();
+        }
+        if center + width < width * height
+            && self.cell_is_free(CellIndex::from_usize(center + width))
+        {
+            mask |= 1 << Move::Up.as_index();
+        }
+        mask
+    }
+
+    /// Everything one candidate move of `snake` needs, gathered with a single read of the
+    /// destination cell instead of one read per predicate.
+    pub fn describe_move(&self, snake: SnakeId, head: CellIndex<T>, mv: Move) -> MoveTarget<T> {
+        let width = usize::from(self.embedded.get_actual_width());
+        let height = usize::from(self.embedded.get_actual_height());
+        let center = head.as_usize();
+        let x = center % width;
+        let index = match mv {
+            Move::Left if x > 0 => center - 1,
+            Move::Right if x + 1 < width => center + 1,
+            Move::Down if center >= width => center - width,
+            Move::Up if center + width < width * height => center + width,
+            // Off-board: the simulator's conventional fallback is still a direction, so report
+            // it without letting the caller inspect a cell that does not exist.
+            _ => return MoveTarget::off_board(),
+        };
+
+        let destination = CellIndex::from_usize(index);
+        let cell = self.embedded.get_cell(destination);
+        MoveTarget {
+            destination,
+            on_board: true,
+            is_food: cell.is_food(),
+            is_hazard: cell.is_hazard(),
+            is_own_neck: cell.get_snake_id() == Some(snake) && cell.get_next_index() == Some(head),
+        }
+    }
+}
+
+/// One candidate destination, with the flags a move policy needs. Reading them together keeps
+/// the search hot path down to one cell read per candidate instead of one per predicate.
+#[derive(Clone, Copy, Debug)]
+pub struct MoveTarget<T: CN> {
+    /// Only meaningful when `on_board` is set.
+    pub destination: CellIndex<T>,
+    /// False for a move that leaves the board, in which case every other field is meaningless.
+    pub on_board: bool,
+    /// The destination holds food this turn.
+    pub is_food: bool,
+    /// The destination is a hazard this turn.
+    pub is_hazard: bool,
+    /// The destination is this snake's neck, so moving there reverses into our own body.
+    pub is_own_neck: bool,
+}
+
+impl<T: CN> MoveTarget<T> {
+    fn off_board() -> Self {
+        Self {
+            destination: CellIndex::from_i32(0),
+            on_board: false,
+            is_food: false,
+            is_hazard: false,
+            is_own_neck: false,
+        }
+    }
+}
+
+/// Build a `MoveArray` from a mask produced by `reasonable_move_mask`, preserving `Move::all()`
+/// order. An empty mask falls back to `Move::Up`, matching the previous iterator-based scan.
+pub fn moves_from_mask(mask: u8) -> MoveArray {
+    let mut moves: MoveArray = MoveArray::new();
+    for mv in Move::all() {
+        if mask & (1 << mv.as_index()) != 0 {
+            moves.push(mv);
+        }
+    }
+    if moves.is_empty() {
+        moves.push(Move::Up);
+    }
+    moves
 }
 
 /// Uniformly chooses one of the legal moves encoded in `legal_mask`, where bit
@@ -127,36 +252,47 @@ fn choose_from_legal_mask(legal_mask: u8, rng: &mut impl Rng) -> Move {
 }
 
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
+    CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
+{
+    /// The reasonable-move mask of every living snake, without building a `MoveArray` per
+    /// snake. Hot paths that only test or iterate moves should prefer this. A snake with no
+    /// reasonable move reports the same `Move::Up` fallback the list-based API uses.
+    pub fn reasonable_move_masks(&self) -> ArrayVec<(SnakeId, u8), MAX_SNAKES> {
+        self.embedded
+            .iter_healths()
+            .enumerate()
+            .filter(|(_, health)| **health > 0)
+            .map(|(index, _)| {
+                let id = SnakeId(index as u8);
+                let mask =
+                    self.reasonable_move_mask(self.embedded.get_head_as_native_position(&id));
+                let mask = if mask == 0 {
+                    1 << Move::Up.as_index()
+                } else {
+                    mask
+                };
+                (id, mask)
+            })
+            .collect()
+    }
+}
+
+impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     RandomReasonableMovesGame for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
     fn random_reasonable_move_for_each_snake<'a>(
         &'a self,
         rng: &'a mut impl Rng,
     ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
-        let width = self.embedded.get_actual_width();
         self.embedded
             .iter_healths()
             .enumerate()
             .filter(|(_, health)| **health > 0)
             .map(move |(idx, _)| {
                 let sid = SnakeId(idx as u8);
-                let head_pos = self.get_head_as_position(&sid);
-
-                // One scan of the four moves, recording legality in a stack-only bitmask.
-                let mut legal_mask = 0u8;
-                for mv in Move::all() {
-                    let new_head = head_pos.add_vec(mv.to_vector());
-                    let ci = CellIndex::new(new_head, width);
-                    if !self.off_board(new_head)
-                        && (!self.embedded.cell_is_body(ci)
-                            || self.embedded.cell_is_single_tail(ci))
-                        && !self.embedded.cell_is_snake_head(ci)
-                    {
-                        legal_mask |= 1 << mv.as_index();
-                    }
-                }
-
-                (sid, choose_from_legal_mask(legal_mask, rng))
+                let mask =
+                    self.reasonable_move_mask(self.embedded.get_head_as_native_position(&sid));
+                (sid, choose_from_legal_mask(mask, rng))
             })
     }
 }
@@ -167,30 +303,14 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
     type SnakeMoves = ArrayVec<(SnakeId, MoveArray), MAX_SNAKES>;
 
     fn reasonable_moves_for_each_snake(&self) -> Self::SnakeMoves {
-        let width = self.embedded.get_actual_width();
         self.embedded
             .iter_healths()
             .enumerate()
             .filter(|(_, health)| **health > 0)
             .map(move |(idx, _)| {
-                let head_pos = self.get_head_as_position(&SnakeId(idx as u8));
-
-                let mut mvs: MoveArray = IntoIterator::into_iter(Move::all())
-                    .filter(|mv| {
-                        let new_head = head_pos.add_vec(mv.to_vector());
-                        let ci = CellIndex::new(new_head, width);
-
-                        !self.off_board(new_head)
-                            && (!self.embedded.cell_is_body(ci)
-                                || self.embedded.cell_is_single_tail(ci))
-                            && !self.embedded.cell_is_snake_head(ci)
-                    })
-                    .collect();
-                if mvs.is_empty() {
-                    mvs.push(Move::Up);
-                }
-
-                (SnakeId(idx as u8), mvs)
+                let sid = SnakeId(idx as u8);
+                let head = self.embedded.get_head_as_native_position(&sid);
+                (sid, moves_from_mask(self.reasonable_move_mask(head)))
             })
             .collect()
     }
@@ -394,6 +514,81 @@ mod test {
             compact.get_head_as_native_position(&SnakeId(0)),
             CellIndex(6 * 11 + 4)
         );
+    }
+
+    #[test]
+    fn free_neighbor_count_matches_iterator_on_every_cell() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let cells = (game.board.width * game.board.height) as usize;
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            for index in 0..cells {
+                let pos = CellIndex::from_usize(index);
+                assert_eq!(
+                    usize::from(board.free_neighbor_count(pos)),
+                    board.free_neighbors(pos).count(),
+                    "cell {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn move_masks_agree_with_the_move_list_api() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            let listed = board.reasonable_moves_for_each_snake();
+            for (id, mask) in board.reasonable_move_masks() {
+                let moves = listed
+                    .iter()
+                    .find(|(listed_id, _)| *listed_id == id)
+                    .map(|(_, moves)| *moves)
+                    .expect("every masked snake appears in the move list");
+                assert_eq!(moves_from_mask(mask).as_slice(), moves.as_slice());
+            }
+            assert_eq!(listed.len(), board.reasonable_move_masks().len());
+        }
+    }
+
+    #[test]
+    fn describe_move_agrees_with_the_per_predicate_reads() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            for (id, _) in board.reasonable_move_masks() {
+                let head = board.get_head_as_native_position(&id);
+                let head_pos = board.get_head_as_position(&id);
+                for mv in Move::all() {
+                    let target = board.describe_move(id, head, mv);
+                    let destination = head_pos.add_vec(mv.to_vector());
+                    let off_board = board.off_board(destination);
+                    assert_eq!(target.on_board, !off_board, "{mv} {:?}", id);
+                    if off_board {
+                        continue;
+                    }
+                    let native = board.native_from_position(destination);
+                    assert_eq!(target.destination, native);
+                    assert_eq!(target.is_food, board.is_food(&native));
+                    assert_eq!(target.is_hazard, board.is_hazard(&native));
+                    assert_eq!(target.is_own_neck, board.is_neck(&id, &native));
+                }
+            }
+        }
     }
 
     #[test]

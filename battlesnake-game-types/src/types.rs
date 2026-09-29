@@ -151,6 +151,24 @@ impl Move {
         }
     }
 
+    /// x component of this move's direction, as -1, 0 or 1
+    pub const fn dx(self) -> i32 {
+        match self {
+            Move::Left => -1,
+            Move::Right => 1,
+            Move::Up | Move::Down => 0,
+        }
+    }
+
+    /// y component of this move's direction, as -1, 0 or 1
+    pub const fn dy(self) -> i32 {
+        match self {
+            Move::Up => 1,
+            Move::Down => -1,
+            Move::Left | Move::Right => 0,
+        }
+    }
+
     /// create a Move from the given vector
     pub fn from_vector(vector: Vector) -> Self {
         match vector {
