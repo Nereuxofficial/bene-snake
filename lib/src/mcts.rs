@@ -23,7 +23,7 @@ use rand::{Rng, RngExt, seq::IndexedRandom};
 use crate::eval::evaluate_board;
 use tracing::info;
 
-const MAX_ROLLOUT_DEPTH: u32 = 64;
+const MAX_ROLLOUT_DEPTH: u32 = 24;
 const MAX_TREE_DEPTH: usize = 64;
 // Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
 const WIN_REWARD: u32 = 1000;
@@ -32,6 +32,13 @@ const LEAF_SCORE_HALF_REWARD: u32 = 1000;
 // Terminal wins still outrank every live result.
 const FOOD_GAIN_REWARD: u32 = 100;
 const UNIFORM_MOVE_PERCENT: u32 = 20;
+
+#[derive(Clone, Copy)]
+struct RolloutOptions {
+    food_guidance: bool,
+    food_gain_reward: u32,
+    depth: u32,
+}
 
 fn leaf_reward(score: u16) -> u32 {
     let score = u32::from(score);
@@ -42,6 +49,7 @@ fn leaf_reward(score: u16) -> u32 {
 /// A cached per-snake policy built from the state before any moves are chosen.
 struct MovePolicy {
     weights: [u8; 4],
+    total_weight: u32,
     /// Bit `Move::as_index()` is set for each reasonable move whose destination can also
     /// be entered by a living opponent that is at least as long after the move. The
     /// simulator kills every snake tied for the longest new head, so an equal or longer
@@ -58,16 +66,17 @@ fn move_policy(
     snake: SnakeId,
     legal: MoveArray,
     all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
+    food: &[Position],
     food_guidance: bool,
 ) -> MovePolicy {
     let head = board.get_head_as_position(&snake);
     let health = board.get_health_i64(&snake);
     let length = board.get_length_i64(&snake);
-    let food = board.get_all_food_as_positions();
     let nearest_food = food.iter().map(|pos| manhattan(head, *pos)).min();
     let food_is_urgent = health <= 50;
     let mut policy = MovePolicy {
         weights: [0; 4],
+        total_weight: 0,
         losing_head_contests: 0,
     };
 
@@ -148,6 +157,7 @@ fn move_policy(
             weight = (weight / 4).max(1);
         }
         policy.weights[mv.as_index()] = weight;
+        policy.total_weight += u32::from(weight);
     }
     policy
 }
@@ -170,7 +180,8 @@ fn move_weights(
     legal: MoveArray,
     all_moves: &ArrayVec<(SnakeId, MoveArray), 4>,
 ) -> [u8; 4] {
-    move_policy(board, snake, legal, all_moves, true).weights
+    let food = board.get_all_food_as_positions();
+    move_policy(board, snake, legal, all_moves, &food, true).weights
 }
 
 fn is_feasible_destination(
@@ -205,16 +216,17 @@ fn manhattan(left: Position, right: Position) -> u32 {
     left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
 }
 
-fn sample_policy_move(moves: MoveArray, weights: [u8; 4], rng: &mut impl Rng) -> Move {
+fn sample_policy_move(
+    moves: MoveArray,
+    weights: [u8; 4],
+    total_weight: u32,
+    rng: &mut impl Rng,
+) -> Move {
     // A 20% uniform component keeps every reasonable move possible; the rest follows the cached
     // weighted policy. This avoids a softmax and keeps sampling allocation-free.
     if rng.random_range(0..100) < UNIFORM_MOVE_PERCENT {
         return moves.choose(rng).copied().unwrap_or(Move::Up);
     }
-    let total_weight: u32 = moves
-        .iter()
-        .map(|mv| u32::from(weights[mv.as_index()]))
-        .sum();
     if total_weight == 0 {
         return moves.choose(rng).copied().unwrap_or(Move::Up);
     }
@@ -231,6 +243,7 @@ fn sample_policy_move(moves: MoveArray, weights: [u8; 4], rng: &mut impl Rng) ->
 
 fn sample_rollout_moves(
     board: &CellBoard4Snakes11x11,
+    food: &[Position],
     rng: &mut impl Rng,
     food_guidance: bool,
 ) -> ArrayVec<(SnakeId, Move), 4> {
@@ -241,8 +254,11 @@ fn sample_rollout_moves(
     legal_moves
         .iter()
         .map(|(snake, moves)| {
-            let policy = move_policy(board, *snake, *moves, &legal_moves, true);
-            (*snake, sample_policy_move(*moves, policy.weights, rng))
+            let policy = move_policy(board, *snake, *moves, &legal_moves, food, true);
+            (
+                *snake,
+                sample_policy_move(*moves, policy.weights, policy.total_weight, rng),
+            )
         })
         .collect()
 }
@@ -267,6 +283,7 @@ pub struct Node {
     board: CellBoard4Snakes11x11,
     food_guidance: bool,
     food_gain_reward: u32,
+    rollout_depth: u32,
     children: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
     visits: AtomicU32,
     own_moves: [MoveStats; 4],
@@ -333,12 +350,21 @@ impl SearchTreeCache {
 struct NodeMoveCache {
     moves: ArrayVec<(SnakeId, MoveArray), 4>,
     policies: [[u8; 4]; 4],
+    policy_totals: [u32; 4],
     /// Fixed-size, per-snake tree candidate lists with losing head-to-head contests
     /// removed. Only `you` ever reads its entry; opponents keep sampling `moves`.
     tree_moves: [MoveArray; 4],
 }
 
 impl Node {
+    fn rollout_options(&self) -> RolloutOptions {
+        RolloutOptions {
+            food_guidance: self.food_guidance,
+            food_gain_reward: self.food_gain_reward,
+            depth: self.rollout_depth,
+        }
+    }
+
     pub fn visits(&self) -> u32 {
         self.visits.load(Ordering::Relaxed)
     }
@@ -352,23 +378,31 @@ impl Node {
         board: CellBoard4Snakes11x11,
         food_gain_reward: u32,
     ) -> Self {
-        Self::new_root_with_food_guidance_and_reward(board, true, food_gain_reward)
+        Self::new_root_with_options(board, true, food_gain_reward, MAX_ROLLOUT_DEPTH)
     }
 
     /// Construct a root with food guidance configurable for controlled search experiments.
     pub fn new_root_with_food_guidance(board: CellBoard4Snakes11x11, food_guidance: bool) -> Self {
-        Self::new_root_with_food_guidance_and_reward(board, food_guidance, FOOD_GAIN_REWARD)
+        Self::new_root_with_options(board, food_guidance, FOOD_GAIN_REWARD, MAX_ROLLOUT_DEPTH)
     }
 
-    fn new_root_with_food_guidance_and_reward(
+    /// Override rollout horizon for controlled search comparisons.
+    pub fn new_root_with_rollout_depth(board: CellBoard4Snakes11x11, rollout_depth: u32) -> Self {
+        assert!(rollout_depth > 0);
+        Self::new_root_with_options(board, true, FOOD_GAIN_REWARD, rollout_depth)
+    }
+
+    fn new_root_with_options(
         board: CellBoard4Snakes11x11,
         food_guidance: bool,
         food_gain_reward: u32,
+        rollout_depth: u32,
     ) -> Self {
         Self {
             board,
             food_guidance,
             food_gain_reward,
+            rollout_depth,
             children: Mutex::new(BTreeMap::new()),
             visits: AtomicU32::new(0),
             own_moves: std::array::from_fn(|_| MoveStats::default()),
@@ -379,16 +413,21 @@ impl Node {
     fn move_cache(&self) -> &NodeMoveCache {
         self.move_cache.get_or_init(|| {
             let moves = self.board.reasonable_moves_for_each_snake();
+            let food = self.board.get_all_food_as_positions();
             let mut policies = [[0; 4]; 4];
+            let mut policy_totals = [0; 4];
             let mut tree_moves = [MoveArray::new(); 4];
             for (id, legal) in &moves {
-                let policy = move_policy(&self.board, *id, *legal, &moves, self.food_guidance);
+                let policy =
+                    move_policy(&self.board, *id, *legal, &moves, &food, self.food_guidance);
                 policies[id.as_usize()] = policy.weights;
+                policy_totals[id.as_usize()] = policy.total_weight;
                 tree_moves[id.as_usize()] = pruned_tree_moves(*legal, policy.losing_head_contests);
             }
             NodeMoveCache {
                 moves,
                 policies,
+                policy_totals,
                 tree_moves,
             }
         })
@@ -496,7 +535,12 @@ impl Node {
                 let mv = if *id == you {
                     own_move
                 } else {
-                    sample_policy_move(*moves, cache.policies[id.as_usize()], rng)
+                    sample_policy_move(
+                        *moves,
+                        cache.policies[id.as_usize()],
+                        cache.policy_totals[id.as_usize()],
+                        rng,
+                    )
                 };
                 (*id, mv)
             })
@@ -519,10 +563,11 @@ impl Node {
             return (None, next_board, false);
         }
 
-        let child = Arc::new(Node::new_root_with_food_guidance_and_reward(
+        let child = Arc::new(Node::new_root_with_options(
             next_board,
             self.food_guidance,
             self.food_gain_reward,
+            self.rollout_depth,
         ));
         children.insert(key, Arc::clone(&child));
         (Some(child), next_board, true)
@@ -541,9 +586,8 @@ impl Node {
             you,
             stats,
             &mut rand::rng(),
-            self.food_guidance,
             self.board.get_length(you),
-            self.food_gain_reward,
+            self.rollout_options(),
         )
     }
 
@@ -559,9 +603,8 @@ impl Node {
             you,
             stats,
             rng,
-            self.food_guidance,
             root_length,
-            self.food_gain_reward,
+            self.rollout_options(),
         )
     }
 }
@@ -571,20 +614,29 @@ fn rollout_from(
     you: &SnakeId,
     stats: &mut SearchDepthStats,
     rng: &mut impl Rng,
-    food_guidance: bool,
     root_length: u16,
-    food_gain_reward: u32,
+    options: RolloutOptions,
 ) -> u32 {
     let mut depth = 0;
+    let mut food = if options.food_guidance {
+        board.get_all_food_as_positions()
+    } else {
+        ArrayVec::new()
+    };
 
-    while !board.is_over() && board.get_health(you) > 0 && depth < MAX_ROLLOUT_DEPTH {
-        let moves = sample_rollout_moves(&board, rng, food_guidance);
+    while !board.is_over() && board.get_health(you) > 0 && depth < options.depth {
+        let moves = sample_rollout_moves(&board, &food, rng, options.food_guidance);
         board = board.simulate_single_action(&moves).1;
+        // Rollout simulation removes eaten food and does not spawn replacement food.
+        // Updating the small food list avoids scanning every board cell each step.
+        if options.food_guidance {
+            food.retain(|pos| board.is_food(&board.native_from_position(*pos)));
+        }
         depth += 1;
     }
 
     stats.max_rollout_depth = stats.max_rollout_depth.max(depth);
-    if depth == MAX_ROLLOUT_DEPTH && !board.is_over() && board.get_health(you) > 0 {
+    if depth == options.depth && !board.is_over() && board.get_health(you) > 0 {
         stats.rollout_depth_limit_hits += 1;
     }
 
@@ -594,7 +646,8 @@ fn rollout_from(
         WIN_REWARD
     } else {
         let gained = u32::from(board.get_length(you).saturating_sub(root_length));
-        (leaf_reward(evaluate_board(&board, you)) + gained * food_gain_reward).min(WIN_REWARD - 1)
+        (leaf_reward(evaluate_board(&board, you)) + gained * options.food_gain_reward)
+            .min(WIN_REWARD - 1)
     }
 }
 
@@ -606,7 +659,7 @@ fn search_iteration(
 ) {
     const EXPLORATION: f64 = 1.0;
     stats.iterations += 1;
-    let mut path = Vec::with_capacity(16);
+    let mut path = ArrayVec::<(Arc<Node>, Move), MAX_TREE_DEPTH>::new();
     let mut node = Arc::clone(root);
     let root_length = root.board.get_length(you);
     let result = loop {
@@ -632,9 +685,8 @@ fn search_iteration(
                     you,
                     stats,
                     rng,
-                    root.food_guidance,
                     root_length,
-                    root.food_gain_reward,
+                    root.rollout_options(),
                 );
             }
         }
@@ -664,9 +716,9 @@ pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
         max_tree_depth_reached = stats.max_tree_depth == MAX_TREE_DEPTH,
         tree_depth_cap_truncated_search = stats.tree_depth_limit_hits > 0,
         tree_depth_limit_hits = stats.tree_depth_limit_hits,
-        max_rollout_depth = MAX_ROLLOUT_DEPTH,
+        max_rollout_depth = root.rollout_depth,
         observed_max_rollout_depth = stats.max_rollout_depth,
-        max_rollout_depth_reached = stats.max_rollout_depth == MAX_ROLLOUT_DEPTH,
+        max_rollout_depth_reached = stats.max_rollout_depth == root.rollout_depth,
         rollout_depth_cap_truncated_search = stats.rollout_depth_limit_hits > 0,
         rollout_depth_limit_hits = stats.rollout_depth_limit_hits,
         "MCTS search depth telemetry"
@@ -1070,6 +1122,7 @@ mod tests {
         let expected = sample_policy_move(
             opponent_legal,
             cache.policies[opponent.as_usize()],
+            cache.policy_totals[opponent.as_usize()],
             &mut expected_rng,
         );
         assert_eq!(sampled, expected);
@@ -1300,19 +1353,26 @@ mod tests {
         let mut baseline_rng = rand::rngs::SmallRng::seed_from_u64(7);
         let mut foodward_with_food = 0;
         let mut foodward_without_food = 0;
+        let with_food_positions = with_food.get_all_food_as_positions();
+        let without_food_positions = without_food.get_all_food_as_positions();
 
         for _ in 0..10_000 {
             foodward_with_food += u32::from(
-                sample_rollout_moves(&with_food, &mut food_rng, true)
+                sample_rollout_moves(&with_food, &with_food_positions, &mut food_rng, true)
                     .iter()
                     .find(|(id, _)| *id == snake)
                     .is_some_and(|(_, mv)| *mv == Move::Left),
             );
             foodward_without_food += u32::from(
-                sample_rollout_moves(&without_food, &mut baseline_rng, true)
-                    .iter()
-                    .find(|(id, _)| *id == snake)
-                    .is_some_and(|(_, mv)| *mv == Move::Left),
+                sample_rollout_moves(
+                    &without_food,
+                    &without_food_positions,
+                    &mut baseline_rng,
+                    true,
+                )
+                .iter()
+                .find(|(id, _)| *id == snake)
+                .is_some_and(|(_, mv)| *mv == Move::Left),
             );
         }
 
@@ -1320,6 +1380,43 @@ mod tests {
             foodward_with_food > foodward_without_food + 250,
             "expected rollout to prefer the safe food move: with={foodward_with_food}, without={foodward_without_food}"
         );
+    }
+
+    #[test]
+    fn rollout_food_list_matches_simulated_board_after_eating() {
+        let (mut board, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            100,
+            &[(&[Position::new(2, 9), Position::new(2, 10)], 100)],
+            vec![Position::new(5, 6), Position::new(0, 0)],
+        );
+        let mut food = board.get_all_food_as_positions();
+        let eat: ArrayVec<_, 4> = board
+            .reasonable_moves_for_each_snake()
+            .iter()
+            .map(|(snake, moves)| (*snake, if *snake == you { Move::Up } else { moves[0] }))
+            .collect();
+        board = board.simulate_single_action(&eat).1;
+        food.retain(|pos| board.is_food(&board.native_from_position(*pos)));
+        assert_eq!(food.len(), 1, "the adjacent food should have been eaten");
+        assert_eq!(
+            food.as_slice(),
+            board.get_all_food_as_positions().as_slice()
+        );
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(29);
+        for _ in 0..64 {
+            if board.is_over() {
+                break;
+            }
+            let moves = sample_rollout_moves(&board, &food, &mut rng, true);
+            board = board.simulate_single_action(&moves).1;
+            food.retain(|pos| board.is_food(&board.native_from_position(*pos)));
+            assert_eq!(
+                food.as_slice(),
+                board.get_all_food_as_positions().as_slice()
+            );
+        }
     }
 
     #[test]
@@ -1343,7 +1440,7 @@ mod tests {
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(31);
         assert_eq!(
-            sample_policy_move(MoveArray::new(), [0; 4], &mut rng),
+            sample_policy_move(MoveArray::new(), [0; 4], 0, &mut rng),
             Move::Up
         );
     }
@@ -1356,7 +1453,7 @@ mod tests {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(44);
         let mut counts = [0; 4];
         for _ in 0..6000 {
-            let mv = sample_policy_move(moves, weights, &mut rng);
+            let mv = sample_policy_move(moves, weights, 20, &mut rng);
             assert!(moves.contains(&mv));
             counts[mv.as_index()] += 1;
         }

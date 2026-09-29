@@ -84,29 +84,23 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     }
 
     /// Return the surrounding fields not immediately blocked
-    pub fn free_neighbors<'a>(
-        &'a self,
-        pos: CellIndex<u8>,
-    ) -> Box<dyn Iterator<Item = CellIndex<T>> + 'a> {
+    pub fn free_neighbors(&self, pos: CellIndex<u8>) -> impl Iterator<Item = CellIndex<T>> + '_ {
         let width = self.embedded.get_actual_width();
         let head_pos = pos.into_position(width);
 
-        Box::new(
-            Move::all_iter()
-                .map(move |mv| {
-                    let new_head = head_pos.add_vec(mv.to_vector());
-                    let ci = CellIndex::new(new_head, width);
+        Move::all_iter()
+            .map(move |mv| {
+                let new_head = head_pos.add_vec(mv.to_vector());
+                let ci = CellIndex::new(new_head, width);
 
-                    (new_head, ci)
-                })
-                .filter(move |(new_head, ci)| {
-                    !self.off_board(*new_head)
-                        && (!self.embedded.cell_is_body(*ci)
-                            || self.embedded.cell_is_single_tail(*ci))
-                        && !self.embedded.cell_is_snake_head(*ci)
-                })
-                .map(|(_, ci)| ci),
-        )
+                (new_head, ci)
+            })
+            .filter(move |(new_head, ci)| {
+                !self.off_board(*new_head)
+                    && (!self.embedded.cell_is_body(*ci) || self.embedded.cell_is_single_tail(*ci))
+                    && !self.embedded.cell_is_snake_head(*ci)
+            })
+            .map(|(_, ci)| ci)
     }
 }
 
@@ -493,6 +487,19 @@ mod test {
         let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
         let (_, next) = board.simulate_single_action(&[(SnakeId(0), Move::Up)]);
         assert_eq!(next.get_health(&SnakeId(0)), 0);
+    }
+
+    #[test]
+    fn single_action_reverse_into_neck_is_fatal() {
+        let game: DEGame =
+            serde_json::from_str(include_str!("../../../fixtures/start_of_game.json"))
+                .expect("valid fixture");
+        let ids = build_snake_id_map(&game);
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+        let (_, reversed) = board.simulate_single_action(&[(SnakeId(0), Move::Up)]);
+        assert_eq!(reversed.get_health(&SnakeId(0)), 0);
+        let (_, forward) = board.simulate_single_action(&[(SnakeId(0), Move::Down)]);
+        assert!(forward.get_health(&SnakeId(0)) > 0);
     }
 
     #[test]

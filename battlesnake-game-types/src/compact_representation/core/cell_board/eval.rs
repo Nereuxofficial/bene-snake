@@ -108,23 +108,14 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                     }
                 };
 
-                // TWe calculate the 'neck' so that we can avoid the 'instant death'
-                // of moving into your neck
-                let neck = {
-                    let mut curr = old_tail;
-                    let mut prev = curr;
-
-                    while curr != old_head {
-                        prev = curr;
-                        curr = self.get_cell(curr).get_next_index().unwrap_or_else(|| {
-                            eprintln!("{}", self);
-                            panic!("snake is inconsistent")
-                        });
-                    }
-
-                    prev
-                };
-                if new_head == neck {
+                // A body cell points to the next segment toward the head, so the
+                // neighbor that points to our head is the neck. A one-cell snake
+                // has its head and tail stacked in the same cell.
+                let new_head_cell = self.get_cell(new_head);
+                if (new_head == old_head && old_tail == old_head)
+                    || (new_head_cell.get_snake_id() == Some(*id)
+                        && new_head_cell.get_next_index() == Some(old_head))
+                {
                     continue;
                 }
 
