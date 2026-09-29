@@ -101,10 +101,9 @@ fn move_policy(
         if dies_immediately {
             weight = 1;
         } else {
-            let mobility = board
-                .free_neighbors(CellIndex::new(destination, board.get_width() as u8))
-                .count() as u8;
-            weight += mobility.min(4) * 2;
+            let mobility =
+                board.free_neighbor_count(CellIndex::new(destination, board.get_width() as u8));
+            weight += mobility * 2;
             let makes_food_progress = nearest_food.is_some_and(|distance| {
                 food.iter()
                     .map(|pos| manhattan(destination, *pos))
@@ -146,11 +145,20 @@ fn move_policy(
             }
             let other_health = board.get_health_i64(other);
             let other_head = board.get_head_as_position(other);
-            other_legal.iter().any(|other_mv| {
-                let other_destination = other_head.add_vec(other_mv.to_vector());
-                other_destination == destination
-                    && is_feasible_destination(board, *other, other_destination, other_health)
-            })
+            if manhattan(other_head, destination) != 1 {
+                return false;
+            }
+            let approach = if other_head.x < destination.x {
+                Move::Right
+            } else if other_head.x > destination.x {
+                Move::Left
+            } else if other_head.y < destination.y {
+                Move::Up
+            } else {
+                Move::Down
+            };
+            other_legal.contains(&approach)
+                && is_feasible_destination(board, *other, destination, other_health)
         });
         if shared_losing_destination {
             policy.losing_head_contests |= 1 << mv.as_index();
