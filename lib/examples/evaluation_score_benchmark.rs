@@ -108,9 +108,7 @@ fn game_from_position(record: &Value) -> Result<Option<(Game, SnakeId)>, String>
     let frame = &record["frame"];
     let info = &record["game_info"];
     let raw_snakes = frame["Snakes"].as_array().ok_or("frame has no Snakes")?;
-    let last_snakes = info["LastFrame"]["Snakes"]
-        .as_array()
-        .ok_or("game metadata has no snakes")?;
+    let last_snakes = info["LastFrame"]["Snakes"].as_array().unwrap_or(raw_snakes);
     let you_id = last_snakes
         .iter()
         .find(|snake| {

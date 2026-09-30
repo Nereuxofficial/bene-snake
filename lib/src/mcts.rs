@@ -29,6 +29,27 @@ use battlesnake_game_types::{
 
 const MAX_ROLLOUT_DEPTH: u32 = 24;
 const MAX_TREE_DEPTH: usize = 64;
+/// Cell offset of each `Move::as_index()`, in that index order.
+const MOVE_OFFSETS: [(i32, i32); N_MOVES] = [(0, 1), (0, -1), (-1, 0), (1, 0)];
+/// `Move::as_index()` that steps from a cell onto a neighbor at offset `(dx, dy)`, laid out by
+/// `((dx + 1) * 3 + (dy + 1))` over the `-1..=1` range. Only ever read where
+/// `|dx| + |dy| == 1`, so the diagonal and self entries are never selected and hold `Up`.
+const MOVE_FROM_OFFSET: [usize; 9] = {
+    use Move::{Down, Left, Right, Up};
+    let up = Up.as_index();
+    let down = Down.as_index();
+    [
+        up,
+        Right.as_index(),
+        up,
+        up,
+        up,
+        down,
+        up,
+        Left.as_index(),
+        up,
+    ]
+};
 // Terminal rewards and UCB must use the same scale. See experiments/reward-scale/.
 const WIN_REWARD: u32 = 1000;
 const LEAF_SCORE_HALF_REWARD: u32 = 1000;
@@ -180,25 +201,20 @@ fn move_policy(
         if ox.abs() + oy.abs() > 2 {
             continue;
         }
+        // The opponent reaches one of our destinations when that destination is exactly one step
+        // from its head. With the offsets unrolled, the whole geometry is constant arithmetic and
+        // the resulting approach direction is a compile-time index.
         let mut contested = 0u8;
-        for mv in Move::all() {
-            // The opponent reaches our destination when the destination is one step from its
-            // head, which is one step from ours in the opposite direction.
-            let (dx, dy) = (ox - mv.dx(), oy - mv.dy());
+        for (index, &(mx, my)) in MOVE_OFFSETS.iter().enumerate() {
+            let (dx, dy) = (ox - mx, oy - my);
             if dx.abs() + dy.abs() != 1 {
                 continue;
             }
-            let approach = if dx == 1 {
-                Move::Left
-            } else if dx == -1 {
-                Move::Right
-            } else if dy == 1 {
-                Move::Down
-            } else {
-                Move::Up
-            };
-            if other.legal_mask & (1 << approach.as_index()) != 0 {
-                contested |= 1 << mv.as_index();
+            // The opponent's head sits one step off our destination, so it approaches from the
+            // opposite side of us.
+            let approach = MOVE_FROM_OFFSET[(dx + 1) as usize * 3 + (dy + 1) as usize];
+            if other.legal_mask & (1 << approach) != 0 {
+                contested |= 1 << index;
             }
         }
         if contested != 0 {
@@ -207,7 +223,14 @@ fn move_policy(
         }
     }
 
-    for mv in mask_bits(legal) {
+    // Iterating the mask by index rather than through `mask_bits` keeps `1 << index` and
+    // `Move::from_index` constant-folded, so the whole move body is straight-line code.
+    for index in 0..N_MOVES {
+        let bit = 1u8 << index;
+        if legal & bit == 0 {
+            continue;
+        }
+        let mv = Move::from_index(index);
         let target = board.describe_move(snake, head_index, mv);
         // The destination must only be inspected after validating bounds: when every
         // direction is blocked the simulator's conventional fallback is Up, even off-board.
@@ -258,14 +281,13 @@ fn move_policy(
             && contests[..contest_count]
                 .iter()
                 .any(|(other, health, contested)| {
-                    contested & (1 << mv.as_index()) != 0
-                        && is_feasible_destination(board, *other, target, *health)
+                    contested & bit != 0 && is_feasible_destination(board, *other, target, *health)
                 });
         if shared_losing_destination {
-            policy.losing_head_contests |= 1 << mv.as_index();
+            policy.losing_head_contests |= bit;
             weight = (weight / 4).max(1);
         }
-        policy.weights[mv.as_index()] = weight;
+        policy.weights[index] = weight;
         policy.total_weight += u32::from(weight);
     }
     policy
@@ -1259,6 +1281,40 @@ mod tests {
         assert_ne!(node.best_move(you), Some(Move::Up));
         assert_ne!(node.select_own_move(you, 1.0), Some(Move::Up));
         assert_eq!(node.best_move(you), Some(Move::Left));
+    }
+
+    /// The offset table replaces a per-candidate match, so pin it against the direct geometry:
+    /// for every reachable opponent offset, which of our destinations it contests and from which
+    /// side it would approach.
+    #[test]
+    fn move_offset_tables_match_the_direct_head_to_head_geometry() {
+        for ox in -3..=3 {
+            for oy in -3..=3 {
+                for (index, (mx, my)) in MOVE_OFFSETS.into_iter().enumerate() {
+                    let (dx, dy) = (ox - mx, oy - my);
+                    if dx.abs() + dy.abs() != 1 {
+                        continue;
+                    }
+                    let approach = if dx == 1 {
+                        Move::Left
+                    } else if dx == -1 {
+                        Move::Right
+                    } else if dy == 1 {
+                        Move::Down
+                    } else {
+                        Move::Up
+                    };
+                    assert_eq!(
+                        MOVE_FROM_OFFSET[(dx + 1) as usize * 3 + (dy + 1) as usize],
+                        approach.as_index(),
+                        "opponent at ({ox}, {oy}), our move index {index}"
+                    );
+                }
+                for (index, mv) in Move::all().into_iter().enumerate() {
+                    assert_eq!(MOVE_OFFSETS[index], (mv.dx(), mv.dy()), "{mv:?}");
+                }
+            }
+        }
     }
 
     #[test]

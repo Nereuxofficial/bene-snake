@@ -190,8 +190,9 @@ impl Move {
         MoveIter(0)
     }
 
-    /// converts this move to a usize index. indices are the same order as the `Move::all()` method
-    pub fn as_index(&self) -> usize {
+    /// converts this move to a usize index. indices are the same order as the `Move::all()` method.
+    /// Const so callers can build lookup tables from it.
+    pub const fn as_index(&self) -> usize {
         match self {
             Move::Up => 0,
             Move::Down => 1,
