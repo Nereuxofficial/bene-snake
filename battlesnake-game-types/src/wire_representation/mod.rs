@@ -68,8 +68,28 @@ pub struct Board {
     pub height: u32,
     pub width: u32,
     pub food: Vec<Position>,
+    #[serde(deserialize_with = "deserialize_living_snakes")]
     pub snakes: Vec<BattleSnake>,
     pub hazards: Vec<Position>,
+}
+
+fn deserialize_living_snakes<'de, D>(deserializer: D) -> Result<Vec<BattleSnake>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct SnakeWithDeath {
+        #[serde(flatten)]
+        snake: BattleSnake,
+        #[serde(default, rename = "Death", alias = "death")]
+        death: Option<serde_json::Value>,
+    }
+
+    Ok(Vec::<SnakeWithDeath>::deserialize(deserializer)?
+        .into_iter()
+        .filter(|snake| snake.death.is_none())
+        .map(|snake| snake.snake)
+        .collect())
 }
 
 impl fmt::Display for Board {
