@@ -421,6 +421,15 @@ pub struct Node {
     move_cache: OnceLock<NodeMoveCache>,
 }
 
+/// A cached visit needs only its Arc; do not copy its board into the return value.
+// Keep transient boards inline: boxing would allocate on uncached rollouts.
+#[allow(clippy::large_enum_variant)]
+enum ChildResult {
+    Existing(Arc<Node>),
+    Expanded(Arc<Node>),
+    Unstored(CellBoard4Snakes11x11),
+}
+
 /// Children reachable after our issued move. The opponent's simultaneous move is not
 /// known until the next request, so retain the searched responses and match the full
 /// observed board then. Keeping only visited children avoids retaining an empty tree.
@@ -723,20 +732,17 @@ impl Node {
             .collect()
     }
 
-    fn child_for_action(
-        &self,
-        action: &[(SnakeId, Move)],
-    ) -> (Option<Arc<Node>>, CellBoard4Snakes11x11, bool) {
+    fn child_for_action(&self, action: &[(SnakeId, Move)]) -> ChildResult {
         let key = Action::collect_from(action.iter());
         if let Some(child) = self.children.lock().unwrap().get(&key) {
-            return (Some(Arc::clone(child)), child.board, false);
+            return ChildResult::Existing(Arc::clone(child));
         }
 
         let next_board = self.board.simulate_single_action(action).1;
         let max_children = 3 + 2 * (self.visits.load(Ordering::Relaxed) as f64).sqrt() as usize;
         let mut children = self.children.lock().unwrap();
         if children.len() >= max_children {
-            return (None, next_board, false);
+            return ChildResult::Unstored(next_board);
         }
 
         let child = Arc::new(Node::new_root_with_options(
@@ -746,7 +752,7 @@ impl Node {
             self.rollout_depth,
         ));
         children.insert(key, Arc::clone(&child));
-        (Some(child), next_board, true)
+        ChildResult::Expanded(child)
     }
 
     fn record(&self, own_move: Move, result: u32) {
@@ -850,12 +856,17 @@ fn search_iteration(
             break node.rollout_with_rng(you, stats, rng, root_length);
         };
         let action = node.sample_joint_action(*you, own_move, rng);
-        let (child, next_board, newly_expanded) = node.child_for_action(&action);
-        path.push((Arc::clone(&node), own_move));
+        let child = node.child_for_action(&action);
+        // Transfer this visit into the backup path instead of cloning and then
+        // dropping another Arc when advancing to its child.
+        path.push((node, own_move));
 
         match child {
-            Some(next) if !newly_expanded => node = next,
-            _ => {
+            ChildResult::Existing(next) => node = next,
+            ChildResult::Expanded(next) => {
+                break next.rollout_with_rng(you, stats, rng, root_length);
+            }
+            ChildResult::Unstored(next_board) => {
                 break rollout_from(
                     next_board,
                     you,
@@ -928,6 +939,70 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("valid board");
         (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
+    }
+
+    #[test]
+    fn child_results_preserve_expansion_rollouts_and_cached_identity() {
+        use battlesnake_game_types::types::SimulableGame;
+        let (board, you, _) = turn33();
+        let legal = board.reasonable_moves_for_each_snake();
+        let actions: Vec<_> = board.simulate_with_moves(&legal).take(4).collect();
+        assert_eq!(actions.len(), 4);
+        for guidance in [false, true] {
+            let root = Node::new_root_with_options(board, guidance, 17, 7);
+            for (index, (action, expected)) in actions.iter().enumerate() {
+                let moves: ArrayVec<_, 4> = action
+                    .into_inner()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, mv)| mv.map(|mv| (SnakeId(id as u8), mv)))
+                    .collect();
+                match root.child_for_action(&moves) {
+                    ChildResult::Expanded(child) => {
+                        assert!(index < 3);
+                        assert_eq!(child.board, *expected);
+                        let mut actual_rng = rand::rngs::SmallRng::seed_from_u64(181);
+                        let mut reference_rng = actual_rng.clone();
+                        let mut actual_stats = SearchDepthStats::default();
+                        let mut reference_stats = SearchDepthStats::default();
+                        let root_length = board.get_length(&you);
+                        let actual = child.rollout_with_rng(
+                            &you,
+                            &mut actual_stats,
+                            &mut actual_rng,
+                            root_length,
+                        );
+                        let reference = rollout_from(
+                            *expected,
+                            &you,
+                            &mut reference_stats,
+                            &mut reference_rng,
+                            root_length,
+                            root.rollout_options(),
+                        );
+                        assert_eq!(actual, reference);
+                        assert_eq!(
+                            actual_stats.max_rollout_depth,
+                            reference_stats.max_rollout_depth
+                        );
+                        assert_eq!(
+                            actual_stats.rollout_depth_limit_hits,
+                            reference_stats.rollout_depth_limit_hits
+                        );
+                        assert_eq!(actual_rng.random::<u64>(), reference_rng.random::<u64>());
+                        let ChildResult::Existing(cached) = root.child_for_action(&moves) else {
+                            panic!("cached action must be reused");
+                        };
+                        assert!(Arc::ptr_eq(&child, &cached));
+                    }
+                    ChildResult::Unstored(next) => {
+                        assert_eq!(index, 3);
+                        assert_eq!(next, *expected);
+                    }
+                    ChildResult::Existing(_) => panic!("new action should not be cached"),
+                }
+            }
+        }
     }
 
     #[test]
