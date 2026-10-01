@@ -1,37 +1,41 @@
 #![feature(nonpoison_mutex)]
 #![feature(sync_nonpoison)]
 
+mod game_state;
+
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
-use battlesnake_game_types::types::{
-    Move, SnakeIDGettableGame, SnakeIDMap, YouDeterminableGame, build_snake_id_map,
-};
+use battlesnake_game_types::types::{Move, SnakeIDGettableGame, YouDeterminableGame};
 use battlesnake_game_types::wire_representation::Game;
+use game_state::{GameState, ResponseMoves, response_moves};
 use git_version::git_version;
 use lib::mcts::{Node, SearchTreeCache, mcts_search};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::nonpoison::Mutex;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{error, info};
 
-pub static GAME_STATES: OnceLock<Mutex<BTreeMap<String, SnakeIDMap>>> = OnceLock::new();
+static GAME_STATES: OnceLock<Mutex<BTreeMap<String, GameState>>> = OnceLock::new();
 static TREE_CACHES: OnceLock<Mutex<BTreeMap<String, CachedSearch>>> = OnceLock::new();
 static LAST_GAME_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
 const DEPLOY_QUIET_PERIOD: Duration = Duration::from_secs(60);
 const TREE_CACHE_TTL: Duration = Duration::from_secs(90);
 const MAX_CACHED_GAMES: usize = 16;
+const GAME_STATE_TTL: Duration = Duration::from_secs(300);
 // Leave room for response serialization and the public network path.
 const RESPONSE_RESERVE: Duration = Duration::from_millis(185);
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 struct DecodedState {
-    board: CellBoard4Snakes11x11,
+    board: Option<CellBoard4Snakes11x11>,
+    response_moves: ResponseMoves,
     timeout_ms: i64,
     game_id: String,
     turn: i32,
@@ -104,19 +108,47 @@ fn store_search_candidates(game_id: String, turn: i32, candidates: SearchTreeCac
 
 fn decode_state(text: String) -> color_eyre::Result<DecodedState> {
     record_game_request();
-    let game: Game = serde_json::from_str(&text)?;
-    let mut binding = GAME_STATES
+    let mut game: Game = serde_json::from_str(&text)?;
+    let mut games = GAME_STATES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock();
-    let snake_id_map = binding.entry(game.game.id.clone()).or_insert_with(|| {
-        info!(
-            "Game {} had no /start request; initializing from /move",
-            game.game.id
-        );
-        build_snake_id_map(&game)
+    games.retain(|_, state| state.touched.elapsed() <= GAME_STATE_TTL);
+    let state = games.entry(game.game.id.clone()).or_insert_with(|| {
+        info!(game_id = %game.game.id, turn = game.turn, "Initializing game state from /move");
+        GameState::new(&game)
     });
+    let original_snakes = game.board.snakes.len();
+    let normalized = state.normalize(&mut game);
+    let ids = state.ids.clone();
+    drop(games);
+    let response_moves = response_moves(&game);
+    let board = match normalized {
+        Err(e) => {
+            error!(game_id = %game.game.id, turn = game.turn, error = %e, "Invalid normalized board; using fallback");
+            None
+        }
+        Ok(()) => {
+            info!(game_id = %game.game.id, turn = game.turn,
+                removed_snakes = original_snakes - game.board.snakes.len(), "Normalized move request");
+            // This server searches a fixed 11x11 board; reject unsupported shapes
+            // before converting indices. Malformed requests must not panic the handler.
+            if game.board.width != 11 || game.board.height != 11 {
+                error!(game_id = %game.game.id, turn = game.turn, "Unsupported search dimensions; using fallback");
+                None
+            } else {
+                match catch_unwind(AssertUnwindSafe(|| game.as_cell_board(&ids))) {
+                    Ok(Ok(board)) => Some(board),
+                    _ => {
+                        error!(game_id = %game.game.id, turn = game.turn, "Compact conversion failed; using fallback");
+                        None
+                    }
+                }
+            }
+        }
+    };
     Ok(DecodedState {
-        board: game.as_cell_board(snake_id_map).unwrap(),
+        board,
+        response_moves,
         timeout_ms: game.game.timeout,
         game_id: game.game.id,
         turn: game.turn,
@@ -144,10 +176,13 @@ fn record_game_request() {
 }
 
 async fn deploy_ready() -> axum::http::StatusCode {
-    let active_games = GAME_STATES
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .len();
+    let active_games = {
+        let mut games = GAME_STATES
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock();
+        games.retain(|_, state| state.touched.elapsed() <= GAME_STATE_TTL);
+        games.len()
+    };
     let quiet_for = LAST_GAME_REQUEST
         .get_or_init(|| Mutex::new(Instant::now()))
         .lock()
@@ -162,48 +197,95 @@ async fn deploy_ready() -> axum::http::StatusCode {
 async fn get_move(body: String) -> Json<Value> {
     let start = std::time::Instant::now();
     info!("Got move request: {}", body);
-    let decoded = decode_state(body).unwrap();
-    let you = *decoded.board.you_id();
-    let (root_node, reused) = take_search_root(&decoded.game_id, decoded.turn, decoded.board, you);
+    let decoded = match decode_state(body) {
+        Ok(decoded) => decoded,
+        Err(e) => {
+            error!(error = %e, "Unparseable move request; no board available for fallback");
+            return Json(json!({"move": Move::Up}));
+        }
+    };
+    let fallback = decoded.response_moves.fallback;
+    let Some(board) = decoded.board else {
+        return Json(json!({"move": fallback}));
+    };
+    let you = *board.you_id();
+    let root = catch_unwind(AssertUnwindSafe(|| {
+        take_search_root(&decoded.game_id, decoded.turn, board, you)
+    }));
+    let Ok((root_node, reused)) = root else {
+        error!(game_id = %decoded.game_id, turn = decoded.turn, "Search initialization failed; using fallback");
+        return Json(json!({"move": fallback}));
+    };
     let carried_visits = root_node.visits();
     let root_node_clone = root_node.clone();
     let stop = StopSearch(Arc::new(AtomicBool::new(false)));
     let stop_for_search = Arc::clone(&stop.0);
+    let game_id = decoded.game_id.clone();
+    let turn = decoded.turn;
     let task = tokio::task::spawn_blocking(move || {
+        let _span = tracing::info_span!("search", game_id = %game_id, turn).entered();
         mcts_search(root_node_clone, &you, stop_for_search);
     });
-    tokio::time::sleep(search_budget(decoded.timeout_ms, start.elapsed())).await;
-    drop(stop);
-    let mut failed = false;
-    let chosen_move = root_node.best_move(you).unwrap_or_else(|| {
-        failed = true;
-        info!("Could not get move in game!");
-        Move::Down
-    });
-    let worker_finished = match tokio::time::timeout(Duration::from_millis(5), task).await {
-        Ok(Ok(())) => true,
-        Ok(Err(e)) => {
-            error!("MCTS Search failed with: {e}");
-            false
-        }
-        Err(_) => false,
-    };
+    let budget = search_budget(decoded.timeout_ms, start.elapsed());
+    let worker_finished = wait_for_search(task, stop, budget).await;
+    // Never inspect a failed/running worker's potentially poisoned tree. Validate
+    // successful search output against the independent normalized wire fallback.
+    let mut chosen_move = fallback;
     let mut retained_candidates = 0;
-    if worker_finished && !failed {
-        let candidates = SearchTreeCache::after_move(&root_node, you, chosen_move);
-        retained_candidates = candidates.candidate_count();
-        store_search_candidates(decoded.game_id, decoded.turn, candidates);
+    let mut used_fallback = true;
+    if worker_finished {
+        match validated_search_result(worker_finished, &decoded.response_moves, || {
+            let chosen = root_node.best_move(you)?;
+            let candidates = SearchTreeCache::after_move(&root_node, you, chosen);
+            Some((chosen, candidates))
+        }) {
+            Some((chosen, candidates)) => {
+                chosen_move = chosen;
+                used_fallback = false;
+                retained_candidates = candidates.candidate_count();
+                store_search_candidates(decoded.game_id.clone(), decoded.turn, candidates);
+            }
+            _ => {
+                error!(game_id = %decoded.game_id, turn = decoded.turn, "Invalid search result; using fallback")
+            }
+        }
+    } else {
+        error!(game_id = %decoded.game_id, turn = decoded.turn, "Search worker failed or did not stop; using fallback");
     }
-    info!(
-        chosen_move = %chosen_move,
-        elapsed = ?start.elapsed(),
-        reused,
-        carried_visits,
-        retained_candidates,
-        worker_finished,
-        "MCTS move completed"
-    );
+    // Destruction of a large, failed search tree must not delay serialization.
+    tokio::task::spawn_blocking(move || drop(root_node));
+    info!(game_id = %decoded.game_id, turn = decoded.turn,
+        chosen_move = %chosen_move, elapsed = ?start.elapsed(), reused, carried_visits,
+        retained_candidates, worker_finished, used_fallback, "MCTS move completed");
     Json(json!({"move": chosen_move}))
+}
+
+fn validated_search_result(
+    worker_finished: bool,
+    moves: &ResponseMoves,
+    publish: impl FnOnce() -> Option<(Move, SearchTreeCache)>,
+) -> Option<(Move, SearchTreeCache)> {
+    if !worker_finished {
+        return None;
+    }
+    catch_unwind(AssertUnwindSafe(publish))
+        .ok()
+        .flatten()
+        .filter(|(chosen, _)| moves.acceptable[chosen.as_index()])
+}
+
+async fn wait_for_search(
+    mut task: tokio::task::JoinHandle<()>,
+    stop: StopSearch,
+    budget: Duration,
+) -> bool {
+    tokio::select! {
+        result = &mut task => { drop(stop); result.is_ok() }
+        _ = tokio::time::sleep(budget) => {
+            drop(stop);
+            matches!(tokio::time::timeout(Duration::from_millis(5), task).await, Ok(Ok(())))
+        }
+    }
 }
 
 async fn info() -> Json<Value> {
@@ -250,7 +332,7 @@ async fn start(body: String) -> Response {
     let new_game = !games.contains_key(&game_state.game.id);
     games
         .entry(game_state.game.id.clone())
-        .or_insert_with(|| build_snake_id_map(&game_state));
+        .or_insert_with(|| GameState::new(&game_state));
     // /start may arrive after /move; preserve its search tree in that case.
     if new_game {
         tree_caches().lock().remove(&game_state.game.id);
@@ -305,11 +387,10 @@ mod tests {
     async fn move_response_uses_lowercase_move_names() {
         let body = include_str!("../lib/fixtures/turn33-food.json").to_string();
         let game: Game = serde_json::from_str(&body).expect("valid fixture");
-        let snake_id_map = build_snake_id_map(&game);
         GAME_STATES
             .get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()
-            .insert(game.game.id.clone(), snake_id_map);
+            .insert(game.game.id.clone(), GameState::new(&game));
 
         let Json(value) = get_move(body).await;
         let mv = value
@@ -335,7 +416,7 @@ mod tests {
             "expected a valid move, got {response:?}"
         );
         assert_eq!(
-            GAME_STATES.get().unwrap().lock()[&game.game.id][&game.you.id].0,
+            GAME_STATES.get().unwrap().lock()[&game.game.id].ids[&game.you.id].0,
             0
         );
 
@@ -347,13 +428,13 @@ mod tests {
         let mut game: Game = serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json"))
             .expect("valid fixture");
         game.game.id = "late-start-tree-cache-regression".to_string();
-        let ids = build_snake_id_map(&game);
+        let ids = battlesnake_game_types::types::build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("compact board");
         let you = *board.you_id();
         GAME_STATES
             .get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()
-            .insert(game.game.id.clone(), ids);
+            .insert(game.game.id.clone(), GameState::new(&game));
         tree_caches().lock().insert(
             game.game.id.clone(),
             CachedSearch {
@@ -398,5 +479,74 @@ mod tests {
             .await
             .expect("worker did not stop after request cancellation")
             .unwrap();
+    }
+    #[tokio::test]
+    async fn panicked_worker_returns_fallback_without_reading_tree() {
+        let worker = tokio::task::spawn_blocking(|| panic!("injected worker failure"));
+        let finished = wait_for_search(
+            worker,
+            StopSearch(Arc::new(AtomicBool::new(false))),
+            Duration::from_secs(1),
+        )
+        .await;
+        let moves = ResponseMoves {
+            fallback: Move::Left,
+            acceptable: [true; 4],
+        };
+        let result = validated_search_result(finished, &moves, || {
+            panic!("failed tree must never be inspected")
+        });
+        assert_eq!(
+            result.map(|(mv, _)| mv).unwrap_or(moves.fallback),
+            Move::Left
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_that_does_not_stop_is_not_read_or_cached() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _ = release_rx.recv();
+        });
+        let flag = Arc::new(AtomicBool::new(false));
+        let finished = wait_for_search(worker, StopSearch(flag.clone()), Duration::ZERO).await;
+        assert!(!finished);
+        assert!(flag.load(Ordering::Relaxed));
+        let moves = ResponseMoves {
+            fallback: Move::Right,
+            acceptable: [true; 4],
+        };
+        assert!(
+            validated_search_result(finished, &moves, || panic!(
+                "running tree must never be inspected"
+            ))
+            .is_none()
+        );
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn panicked_result_publication_uses_fallback() {
+        let moves = ResponseMoves {
+            fallback: Move::Down,
+            acceptable: [true; 4],
+        };
+        let result = validated_search_result(true, &moves, || panic!("poisoned tree publication"));
+        assert_eq!(
+            result.map(|(mv, _)| mv).unwrap_or(moves.fallback),
+            Move::Down
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_conversion_returns_wire_fallback() {
+        let mut game: Game =
+            serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json")).unwrap();
+        game.game.id = "unsupported-conversion-regression".into();
+        game.board.width = 12;
+        let fallback = response_moves(&game).fallback;
+        let Json(response) = get_move(serde_json::to_string(&game).unwrap()).await;
+        assert_eq!(response["move"], serde_json::to_value(fallback).unwrap());
+        GAME_STATES.get().unwrap().lock().remove(&game.game.id);
     }
 }

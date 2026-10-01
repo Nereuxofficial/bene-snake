@@ -410,6 +410,8 @@ struct MoveStats {
 /// A board state before all snakes choose their next moves.
 pub struct Node {
     board: CellBoard4Snakes11x11,
+    escape_guard_enabled: bool,
+    escape: OnceLock<(SnakeId, crate::escape::EscapeAnalysis)>,
     food_guidance: bool,
     food_gain_reward: u32,
     rollout_depth: u32,
@@ -531,6 +533,8 @@ impl Node {
     ) -> Self {
         Self {
             board,
+            escape_guard_enabled: true,
+            escape: OnceLock::new(),
             food_guidance,
             food_gain_reward,
             rollout_depth,
@@ -539,6 +543,38 @@ impl Node {
             own_moves: std::array::from_fn(|_| MoveStats::default()),
             move_cache: OnceLock::new(),
         }
+    }
+
+    /// Disable only the root escape checks for controlled comparisons.
+    pub fn new_root_with_escape_guard(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
+        let mut root = Self::new_root(board);
+        root.escape_guard_enabled = enabled;
+        root
+    }
+
+    fn prepare_escape_guard(&self, you: SnakeId) {
+        if !self.escape_guard_enabled {
+            return;
+        }
+        self.escape.get_or_init(|| {
+            let cache = self.move_cache();
+            (
+                you,
+                crate::escape::analyze(
+                    &self.board,
+                    you,
+                    cache.tree_masks[you.as_usize()],
+                    cache.policies[you.as_usize()],
+                ),
+            )
+        });
+    }
+
+    fn selection_policy(&self, you: SnakeId) -> [u8; 4] {
+        self.escape.get().filter(|(id, _)| *id == you).map_or(
+            self.move_cache().policies[you.as_usize()],
+            |(_, analysis)| analysis.weights,
+        )
     }
 
     fn move_cache(&self) -> &NodeMoveCache {
@@ -596,16 +632,19 @@ impl Node {
     /// Returns `None` only when `you` has no reasonable moves (for example, a dead snake).
     fn tree_own_mask(&self, you: SnakeId) -> Option<u8> {
         let cache = self.move_cache();
-        cache
-            .masks
-            .iter()
-            .any(|(id, _)| *id == you)
-            .then(|| cache.tree_masks[you.as_usize()])
+        cache.masks.iter().any(|(id, _)| *id == you).then(|| {
+            self.escape
+                .get()
+                .filter(|(id, _)| *id == you)
+                .map_or(cache.tree_masks[you.as_usize()], |(_, analysis)| {
+                    analysis.mask
+                })
+        })
     }
 
     fn select_own_move(&self, you: SnakeId, exploration: f64) -> Option<Move> {
         let mask = self.tree_own_mask(you)?;
-        let policy = self.move_cache().policies[you.as_usize()];
+        let policy = self.selection_policy(you);
         let prior_total: u32 = mask_bits(mask)
             .map(|mv| u32::from(policy[mv.as_index()]))
             .sum();
@@ -634,8 +673,9 @@ impl Node {
     /// Choose only bene-snake's move. Opponent responses are averaged through visits.
     /// Only uncontested tree candidates are considered.
     pub fn best_move(&self, you: SnakeId) -> Option<Move> {
+        self.prepare_escape_guard(you);
         let mask = self.tree_own_mask(you)?;
-        let policy = self.move_cache().policies[you.as_usize()];
+        let policy = self.selection_policy(you);
         mask_bits(mask).max_by(|left, right| {
             let stats = |mv: &Move| &self.own_moves[mv.as_index()];
             let left_visits = stats(left).visits.load(Ordering::Relaxed);
@@ -836,10 +876,23 @@ fn search_iteration(
 
 /// Perform one search iteration, mainly useful for profiling the search.
 pub fn search_once(root: &Arc<Node>, you: &SnakeId, stats: &mut SearchDepthStats) {
+    root.prepare_escape_guard(*you);
     search_iteration(root, you, &mut rand::rng(), stats);
 }
 
+/// One iteration with caller-owned RNG, for reproducible tactical checks and comparisons.
+pub fn search_once_with_rng(
+    root: &Arc<Node>,
+    you: &SnakeId,
+    stats: &mut SearchDepthStats,
+    rng: &mut impl Rng,
+) {
+    root.prepare_escape_guard(*you);
+    search_iteration(root, you, rng, stats);
+}
+
 pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
+    root.prepare_escape_guard(*you);
     let mut rng = rand::rng();
     let mut stats = SearchDepthStats::default();
     while !stop.load(Ordering::Relaxed) {
