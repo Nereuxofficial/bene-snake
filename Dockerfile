@@ -2,6 +2,7 @@
 ## Builder
 ####################################################################################################
 FROM rustlang/rust:nightly AS builder
+LABEL photos.bene.bene-snake.build=true
 
 # These args are automatically provided by Docker buildx
 ARG TARGETPLATFORM

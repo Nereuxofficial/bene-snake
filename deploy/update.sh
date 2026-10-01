@@ -26,6 +26,9 @@ image_name=$(docker compose config --images | head -1)
 built_image=$(docker image inspect --format '{{.Id}}' "$image_name" 2>/dev/null || true)
 if [[ ! -f "$state_dir/built-revision" ]] || [[ $(cat "$state_dir/built-revision") != "$revision" ]] ||
    [[ ! -f "$state_dir/built-image" ]] || [[ $(cat "$state_dir/built-image") != "$built_image" ]]; then
+    # Podman retains intermediate images from each revision. Reclaim only our
+    # unused builder images before compiling another revision.
+    docker image prune --force --filter label=photos.bene.bene-snake.build=true
     GIT_REVISION="$revision" docker compose build bene-snake
     image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_name")
     if [[ "$image_revision" != "$revision" ]]; then
