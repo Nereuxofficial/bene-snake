@@ -19,7 +19,7 @@ use battlesnake_game_types::{
 };
 use rand::{Rng, RngExt};
 
-use crate::eval::evaluate_board;
+use crate::eval::{evaluate_board, evaluate_board_with_food};
 use tracing::info;
 
 #[cfg(test)]
@@ -358,11 +358,13 @@ fn sample_policy_move(mask: u8, weights: [u8; 4], total_weight: u32, rng: &mut i
     let mut sample = (pick * total_weight) >> 16;
     let mut remaining = mask;
     while remaining != 0 {
-        let mv = Move::from_index(remaining.trailing_zeros() as usize);
+        // Work with the move's index directly: converting to `Move` and back would re-derive the
+        // same index just to index the weight array.
+        let index = remaining.trailing_zeros() as usize;
         remaining &= remaining - 1;
-        let weight = u32::from(weights[mv.as_index()]);
+        let weight = u32::from(weights[index]);
         if sample < weight {
-            return mv;
+            return Move::from_index(index);
         }
         sample -= weight;
     }
@@ -658,6 +660,13 @@ impl Node {
             .map(|mv| u32::from(policy[mv.as_index()]))
             .sum();
         let parent_visits = self.visits.load(Ordering::Relaxed) as f64;
+        // `max_by` evaluates both sides of each comparison, so every term that depends only on
+        // the parent was being recomputed for each candidate pair. Hoisting them keeps the exact
+        // same floating-point values while turning several `ln` and `sqrt` calls per node visit
+        // into one each.
+        let parent_exploration_log = (parent_visits + 1.0).ln();
+        let parent_prior_scale = (parent_visits + 1.0).sqrt();
+        let prior_denominator = f64::from(prior_total.max(1));
         mask_bits(mask).max_by(|left, right| {
             let value = |mv: &Move| {
                 let stats = &self.own_moves[mv.as_index()];
@@ -668,12 +677,12 @@ impl Node {
                 let mean =
                     stats.reward.load(Ordering::Relaxed) as f64 / (visits * f64::from(WIN_REWARD));
                 let prior_bonus = if self.food_guidance {
-                    let prior = f64::from(policy[mv.as_index()]) / f64::from(prior_total.max(1));
-                    exploration * prior * (parent_visits + 1.0).sqrt() / (visits + 1.0)
+                    let prior = f64::from(policy[mv.as_index()]) / prior_denominator;
+                    exploration * prior * parent_prior_scale / (visits + 1.0)
                 } else {
                     0.0
                 };
-                mean + exploration * ((parent_visits + 1.0).ln() / visits).sqrt() + prior_bonus
+                mean + exploration * (parent_exploration_log / visits).sqrt() + prior_bonus
             };
             value(left).total_cmp(&value(right))
         })
@@ -828,8 +837,15 @@ fn rollout_from(
         WIN_REWARD
     } else {
         let gained = u32::from(board.get_length(you).saturating_sub(root_length));
-        (leaf_reward(evaluate_board(&board, you)) + gained * options.food_gain_reward)
-            .min(WIN_REWARD - 1)
+        // The rollout already tracks exactly which cells still hold food, so the evaluator can
+        // use that list instead of rescanning the board. When food guidance is off the list is
+        // never populated, so fall back to the board's own list.
+        let score = if options.food_guidance {
+            evaluate_board_with_food(&board, you, &food)
+        } else {
+            evaluate_board(&board, you)
+        };
+        (leaf_reward(score) + gained * options.food_gain_reward).min(WIN_REWARD - 1)
     }
 }
 

@@ -22,7 +22,15 @@ pub fn evaluate_board_with_food_weight(
     length_weight: i32,
     food_distance_weight: i32,
 ) -> u16 {
-    evaluate_board_impl(cellboard, you, length_weight, food_distance_weight, None)
+    let food = cellboard.get_all_food_as_positions();
+    evaluate_board_impl(
+        cellboard,
+        you,
+        length_weight,
+        food_distance_weight,
+        None,
+        &food,
+    )
 }
 
 /// Evaluate a board with the legacy low-health food term while varying the score
@@ -32,7 +40,28 @@ pub fn evaluate_board_with_length_weight(
     you: &SnakeId,
     length_weight: i32,
 ) -> u16 {
-    evaluate_board_impl(cellboard, you, length_weight, 5, Some(40))
+    // Only a starving snake reads the food list here, so skip the scan for a healthy one.
+    let food = if cellboard.get_health(you) < 40 {
+        cellboard.get_all_food_as_positions()
+    } else {
+        arrayvec::ArrayVec::new()
+    };
+    evaluate_board_impl(cellboard, you, length_weight, 5, Some(40), &food)
+}
+
+/// [`evaluate_board`], with the board's food positions supplied by the caller.
+///
+/// Scoring a leaf needs only the distance to the nearest food, but `get_all_food_as_positions`
+/// walks every cell of the board to build the list. A rollout already tracks exactly which cells
+/// hold food, because it has to keep the list correct as food is eaten, so passing it in removes
+/// a full board scan from every leaf evaluation. Passing the board's own list is equivalent, which
+/// `supplied_food_list_matches_the_board_scan` pins.
+pub fn evaluate_board_with_food(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    food_positions: &[Position],
+) -> u16 {
+    evaluate_board_impl(cellboard, you, 3, 12, None, food_positions)
 }
 
 fn evaluate_board_impl(
@@ -41,6 +70,7 @@ fn evaluate_board_impl(
     length_weight: i32,
     food_distance_weight: i32,
     food_health_threshold: Option<u8>,
+    food_positions: &[Position],
 ) -> u16 {
     // Check if we're dead - return worst score
     if cellboard.get_health(you) == 0 {
@@ -63,35 +93,32 @@ fn evaluate_board_impl(
 
     // 3. Immediate mobility (number of valid moves from head) - fast approximation of space
     let head_native = cellboard.get_head_as_native_position(you);
-    let immediate_moves = cellboard.free_neighbors(head_native).count() as i32;
+    // `free_neighbor_count` is the same count as `free_neighbors(..).count()` for every cell, but
+    // it works from cell indices instead of building a `Position` and a `Vector` per neighbour.
+    let immediate_moves = i32::from(cellboard.free_neighbor_count(head_native));
     score += immediate_moves * 25; // This is our proxy for area control
 
-    // 4. Food distance. The production scorer keeps this active at every health level.
-    if food_health_threshold.is_none_or(|threshold| health < threshold) {
-        let head_pos = cellboard.get_head_as_position(you);
-        let food_positions = cellboard.get_all_food_as_positions();
-        if !food_positions.is_empty() {
-            let min_food_dist = food_positions
-                .iter()
-                .map(|food| manhattan_distance(&head_pos, food))
-                .min()
-                .unwrap_or(0);
+    let head_pos = cellboard.get_head_as_position(you);
 
-            let weight = if food_health_threshold.is_some() && health < 20 {
-                food_distance_weight * 2
-            } else {
-                food_distance_weight
-            };
-            score -= min_food_dist * weight;
-        }
+    // 4. Food distance. The production scorer keeps this active at every health level.
+    if food_health_threshold.is_none_or(|threshold| health < threshold)
+        && !food_positions.is_empty()
+    {
+        let min_food_dist = food_positions
+            .iter()
+            .map(|food| manhattan_distance(&head_pos, food))
+            .min()
+            .unwrap_or(0);
+
+        let weight = if food_health_threshold.is_some() && health < 20 {
+            food_distance_weight * 2
+        } else {
+            food_distance_weight
+        };
+        score -= min_food_dist * weight;
     }
 
-    // 5. Center control (middle of board is strategically valuable)
-    let head_pos = cellboard.get_head_as_position(you);
-    let center_dist = (head_pos.x - 5).abs() + (head_pos.y - 5).abs();
-    score -= center_dist;
-
-    // 6. Opponent awareness - avoid dangerous head-to-head collisions
+    // 5. Opponent awareness - avoid dangerous head-to-head collisions
     for opponent_id in 0..4 {
         let opp_id = SnakeId(opponent_id);
         if opp_id == *you {
@@ -127,7 +154,10 @@ fn evaluate_board_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
+    use battlesnake_game_types::{
+        types::{Move, build_snake_id_map},
+        wire_representation::Game,
+    };
 
     fn board_with_food(health: i32, food: Position) -> (CellBoard4Snakes11x11, SnakeId) {
         let mut game: Game =
@@ -143,6 +173,56 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let you = ids[&game.you.id];
         (game.as_cell_board(&ids).unwrap(), you)
+    }
+
+    #[test]
+    fn translation_toward_center_does_not_change_evaluation() {
+        fn translated_board(offset: i32, health: i32) -> (CellBoard4Snakes11x11, SnakeId) {
+            let mut game: Game = serde_json::from_str(include_str!(
+                "../../battlesnake-game-types/fixtures/start_of_game.json"
+            ))
+            .unwrap();
+            let mut ours = game.you.clone();
+            ours.health = health;
+            ours.actual_length = None;
+            ours.body = [(3, 3), (3, 2), (3, 1)]
+                .map(|(x, y)| Position::new(x + offset, y + offset))
+                .into();
+            ours.head = ours.body[0];
+            let mut opponent = ours.clone();
+            opponent.id = "translation-opponent".into();
+            opponent.body = [(6, 6), (6, 5), (6, 4)]
+                .map(|(x, y)| Position::new(x + offset, y + offset))
+                .into();
+            opponent.head = opponent.body[0];
+            game.you = ours.clone();
+            game.board.snakes = vec![ours, opponent];
+            game.board.hazards.clear();
+            game.board.food = [(3, 5), (7, 7)]
+                .map(|(x, y)| Position::new(x + offset, y + offset))
+                .into();
+            let ids = build_snake_id_map(&game);
+            (game.as_cell_board(&ids).unwrap(), ids[&game.you.id])
+        }
+
+        // Food distances, mobility and opponent geometry are identical, while the head's
+        // distance from (5, 5) changes. Absolute center position must contribute no bonus.
+        for health in [10, 35, 100] {
+            let (outer, outer_you) = translated_board(0, health);
+            let (inner, inner_you) = translated_board(1, health);
+            assert_eq!(
+                evaluate_board(&outer, &outer_you),
+                evaluate_board(&inner, &inner_you)
+            );
+            assert_eq!(
+                evaluate_board_with_length_weight(&outer, &outer_you, 3),
+                evaluate_board_with_length_weight(&inner, &inner_you, 3)
+            );
+            assert_eq!(
+                evaluate_board_with_food(&outer, &outer_you, &outer.get_all_food_as_positions()),
+                evaluate_board_with_food(&inner, &inner_you, &inner.get_all_food_as_positions())
+            );
+        }
     }
 
     #[test]
@@ -187,6 +267,46 @@ mod tests {
             "Start of game should have positive score, got {}",
             score
         );
+    }
+
+    #[test]
+    fn supplied_food_list_matches_the_board_scan() {
+        // Passing the board's own food list must score identically to letting the evaluator scan
+        // for it, across every snake on every fixture and after a simulated step.
+        for fixture in [
+            include_str!("../fixtures/turn33-food.json"),
+            include_str!("../../battlesnake-game-types/fixtures/start_of_game.json"),
+            include_str!("../../battlesnake-game-types/fixtures/late_stage.json"),
+            include_str!("../../battlesnake-game-types/fixtures/tail_chase.json"),
+            include_str!("../../battlesnake-game-types/fixtures/goes_for_food.json"),
+        ] {
+            let game: Game = serde_json::from_str(fixture).expect("valid fixture");
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
+            let moves: Vec<_> = board
+                .reasonable_move_masks()
+                .iter()
+                .map(|(id, mask)| (*id, mv_for(mask)))
+                .collect();
+            let after = board.simulate_single_action(&moves).1;
+
+            for subject in [board, after] {
+                let food = subject.get_all_food_as_positions();
+                for index in 0..4 {
+                    let you = SnakeId(index);
+                    assert_eq!(
+                        evaluate_board_with_food(&subject, &you, &food),
+                        evaluate_board(&subject, &you),
+                        "{fixture} {you:?} supplied food list"
+                    );
+                }
+            }
+        }
+    }
+
+    fn mv_for(mask: &u8) -> Move {
+        // `reasonable_move_masks` never yields an empty mask, so this always names a real move.
+        Move::from_index(mask.trailing_zeros() as usize)
     }
 
     #[test]
