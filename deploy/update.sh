@@ -29,7 +29,7 @@ if [[ ! -f "$state_dir/built-revision" ]] || [[ $(cat "$state_dir/built-revision
     # Podman retains intermediate images from each revision. Reclaim only our
     # unused builder images before compiling another revision.
     docker image prune --force --filter label=photos.bene.bene-snake.build=true
-    GIT_REVISION="$revision" docker compose build bene-snake
+    GIT_REVISION="$revision" docker compose build --force-rm bene-snake
     image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_name")
     if [[ "$image_revision" != "$revision" ]]; then
         echo "Built image revision $image_revision does not match $revision" >&2
