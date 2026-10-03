@@ -144,6 +144,8 @@ fn move_policy(
     food: &[Position],
     food_guidance: bool,
 ) -> MovePolicy {
+    #[cfg(feature = "tracy")]
+    let _tracy_span = tracy_client::span!("move_policy");
     let SnakeFacts {
         health,
         length,
@@ -377,6 +379,8 @@ fn sample_rollout_moves(
     rng: &mut impl Rng,
     food_guidance: bool,
 ) -> ArrayVec<(SnakeId, Move), 4> {
+    #[cfg(feature = "tracy")]
+    let _tracy_span = tracy_client::span!("sample_rollout_moves");
     if !food_guidance {
         return board.random_reasonable_move_for_each_snake(rng).collect();
     }
@@ -655,6 +659,8 @@ impl Node {
     }
 
     fn select_own_move(&self, you: SnakeId, exploration: f64) -> Option<Move> {
+        #[cfg(feature = "tracy")]
+        let _tracy_span = tracy_client::span!("select_own_move");
         let mask = self.tree_own_mask(you)?;
         let policy = self.selection_policy(you);
         let prior_total: u32 = mask_bits(mask)
@@ -722,6 +728,8 @@ impl Node {
         own_move: Move,
         rng: &mut impl Rng,
     ) -> ArrayVec<(SnakeId, Move), 4> {
+        #[cfg(feature = "tracy")]
+        let _tracy_span = tracy_client::span!("sample_joint_action");
         let cache = self.move_cache();
         cache
             .masks
@@ -743,6 +751,8 @@ impl Node {
     }
 
     fn child_for_action(&self, action: &[(SnakeId, Move)]) -> ChildResult {
+        #[cfg(feature = "tracy")]
+        let _tracy_span = tracy_client::span!("child_for_action");
         let key = Action::collect_from(action.iter());
         if let Some(child) = self.children.lock().unwrap().get(&key) {
             return ChildResult::Existing(Arc::clone(child));
@@ -809,6 +819,8 @@ fn rollout_from(
     root_length: u16,
     options: RolloutOptions,
 ) -> u32 {
+    #[cfg(feature = "tracy")]
+    let _tracy_span = tracy_client::span!("rollout_from");
     let mut depth = 0;
     let mut food = if options.food_guidance {
         board.get_all_food_as_positions()
@@ -818,7 +830,11 @@ fn rollout_from(
 
     while !board.is_over() && board.get_health(you) > 0 && depth < options.depth {
         let moves = sample_rollout_moves(&board, &food, rng, options.food_guidance);
-        board = board.simulate_single_action(&moves).1;
+        board = {
+            #[cfg(feature = "tracy")]
+            let _tracy_span = tracy_client::span!("rollout simulation");
+            board.simulate_single_action(&moves).1
+        };
         // Rollout simulation removes eaten food and does not spawn replacement food.
         // Updating the small food list avoids scanning every board cell each step.
         if options.food_guidance {
@@ -856,6 +872,8 @@ fn search_iteration(
     rng: &mut impl Rng,
     stats: &mut SearchDepthStats,
 ) {
+    #[cfg(feature = "tracy")]
+    let _tracy_span = tracy_client::span!("search_iteration");
     const EXPLORATION: f64 = 1.0;
     stats.iterations += 1;
     let mut path = ArrayVec::<(Arc<Node>, Move), MAX_TREE_DEPTH>::new();
@@ -917,6 +935,46 @@ pub fn search_once_with_rng(
 ) {
     root.prepare_escape_guard(*you);
     search_iteration(root, you, rng, stats);
+}
+
+/// Benchmark access to the existing rollout hot paths without changing production behavior.
+#[cfg(feature = "bench")]
+pub mod bench {
+    use super::*;
+
+    pub fn prepare_root(node: &Node, you: SnakeId) {
+        node.prepare_escape_guard(you);
+    }
+
+    pub fn search_with_rng(
+        root: &Arc<Node>,
+        you: &SnakeId,
+        stats: &mut SearchDepthStats,
+        rng: &mut impl Rng,
+        iterations: u64,
+    ) {
+        root.prepare_escape_guard(*you);
+        for _ in 0..iterations {
+            search_iteration(root, you, rng, stats);
+        }
+    }
+
+    pub fn rollout_with_rng(
+        node: &Node,
+        you: &SnakeId,
+        stats: &mut SearchDepthStats,
+        rng: &mut impl Rng,
+    ) -> u32 {
+        node.rollout_with_rng(you, stats, rng, node.board.get_length(you))
+    }
+
+    pub fn sample_rollout_moves(
+        board: &CellBoard4Snakes11x11,
+        food: &[Position],
+        rng: &mut impl Rng,
+    ) -> ArrayVec<(SnakeId, Move), 4> {
+        super::sample_rollout_moves(board, food, rng, true)
+    }
 }
 
 pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
