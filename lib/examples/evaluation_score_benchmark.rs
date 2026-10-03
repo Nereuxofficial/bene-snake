@@ -1,4 +1,4 @@
-//! Compare length-weight variants of the evaluation function against held-out
+//! Compare legacy length-weight variants of the evaluation function against held-out
 //! game outcomes using replay positions. Games, rather than turns, are the
 //! statistical unit: each eligible game contributes one mean score per variant.
 //!
@@ -18,7 +18,9 @@ use battlesnake_game_types::{
     types::{SnakeId, build_snake_id_map},
     wire_representation::Game,
 };
-use lib::eval::evaluate_board_with_length_weight;
+#[path = "support/legacy_eval.rs"]
+mod legacy_eval;
+use legacy_eval::evaluate_board_with_length_weight;
 use serde_json::{Value, json};
 
 const DEFAULT_INPUT: &str = "experiments/nereuxofficial-positions.jsonl";
