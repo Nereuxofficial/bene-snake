@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use std::time::Duration;
 
 use battlesnake_game_types::{
@@ -9,7 +6,7 @@ use battlesnake_game_types::{
     types::{Move, SnakeId},
 };
 
-use crate::mcts::{Node, mcts_search};
+use crate::mcts::{Node, SEARCH_WORKERS, search_for};
 
 /// Trait that defines a snake agent's decision-making interface.
 pub trait Agent: Send + Sync {
@@ -72,18 +69,7 @@ impl Agent for MctsAgent {
 
     fn choose_move(&self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Move {
         let root_node = Arc::new(Node::new_root(*board));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let stop_clone = Arc::clone(&stop);
-        let root_clone = Arc::clone(&root_node);
-
-        let search_thread = std::thread::spawn(move || {
-            mcts_search(root_clone, &you, stop_clone);
-        });
-
-        std::thread::sleep(self.think_time);
-        stop.store(true, Ordering::Relaxed);
-        let _ = search_thread.join();
+        search_for(&root_node, &you, self.think_time, SEARCH_WORKERS);
 
         if let Some(mv) = root_node.best_move(you) {
             return mv;

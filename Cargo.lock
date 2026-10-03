@@ -1364,6 +1364,7 @@ dependencies = [
  "battlesnake-game-types",
  "criterion",
  "rand",
+ "rayon",
  "serde",
  "serde_json",
  "tracing",

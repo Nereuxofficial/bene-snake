@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
@@ -18,6 +18,7 @@ use battlesnake_game_types::{
     wire_representation::Position,
 };
 use rand::{Rng, RngExt};
+use std::time::{Duration, Instant};
 
 use crate::eval::{evaluate_board, evaluate_board_with_food};
 use tracing::info;
@@ -29,6 +30,19 @@ use battlesnake_game_types::{
 
 const MAX_ROLLOUT_DEPTH: u32 = 24;
 const MAX_TREE_DEPTH: usize = 64;
+const TREE_PATH_CAPACITY: usize = 128;
+pub const SEARCH_WORKERS: usize = 8;
+
+fn search_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(SEARCH_WORKERS)
+            .thread_name(|i| format!("mcts-{i}"))
+            .build()
+            .expect("create MCTS worker pool")
+    })
+}
 /// Cell offset of each `Move::as_index()`, in that index order.
 const MOVE_OFFSETS: [(i32, i32); N_MOVES] = [(0, 1), (0, -1), (-1, 0), (1, 0)];
 /// `Move::as_index()` that steps from a cell onto a neighbor at offset `(dx, dy)`, laid out by
@@ -407,10 +421,13 @@ pub struct SearchDepthStats {
     pub rollout_depth_limit_hits: u64,
 }
 
+// Separate frequently updated edges to avoid false sharing between workers.
+#[repr(align(64))]
 #[derive(Default)]
 struct MoveStats {
     visits: AtomicU32,
     reward: AtomicU64,
+    in_flight: AtomicU32,
 }
 
 /// A board state before all snakes choose their next moves.
@@ -421,7 +438,8 @@ pub struct Node {
     food_guidance: bool,
     food_gain_reward: u32,
     rollout_depth: u32,
-    children: Mutex<BTreeMap<Action<4>, Arc<Node>>>,
+    children: RwLock<BTreeMap<Action<4>, Arc<Node>>>,
+    tree_depth: usize,
     visits: AtomicU32,
     own_moves: [MoveStats; 4],
     move_cache: OnceLock<NodeMoveCache>,
@@ -453,7 +471,7 @@ impl SearchTreeCache {
     pub fn after_move(root: &Arc<Node>, you: SnakeId, chosen: Move) -> Self {
         let mut candidates: Vec<_> = root
             .children
-            .lock()
+            .read()
             .unwrap()
             .iter()
             .filter(|(action, child)| {
@@ -552,11 +570,20 @@ impl Node {
             food_guidance,
             food_gain_reward,
             rollout_depth,
-            children: Mutex::new(BTreeMap::new()),
+            children: RwLock::new(BTreeMap::new()),
+            tree_depth: MAX_TREE_DEPTH,
             visits: AtomicU32::new(0),
             own_moves: std::array::from_fn(|_| MoveStats::default()),
             move_cache: OnceLock::new(),
         }
+    }
+
+    /// Override the tree horizon for controlled comparisons (rollout horizon is unchanged).
+    pub fn new_root_with_tree_depth(board: CellBoard4Snakes11x11, tree_depth: usize) -> Self {
+        assert!((1..=TREE_PATH_CAPACITY).contains(&tree_depth));
+        let mut root = Self::new_root(board);
+        root.tree_depth = tree_depth;
+        root
     }
 
     /// Disable only the root escape checks for controlled comparisons.
@@ -619,7 +646,7 @@ impl Node {
 
     pub fn get_depth(&self) -> u32 {
         self.children
-            .lock()
+            .read()
             .unwrap()
             .values()
             .map(|child| child.get_depth() + 1)
@@ -666,7 +693,12 @@ impl Node {
         let prior_total: u32 = mask_bits(mask)
             .map(|mv| u32::from(policy[mv.as_index()]))
             .sum();
-        let parent_visits = self.visits.load(Ordering::Relaxed) as f64;
+        let parent_visits = self.visits.load(Ordering::Relaxed) as f64
+            + self
+                .own_moves
+                .iter()
+                .map(|stats| stats.in_flight.load(Ordering::Relaxed) as f64)
+                .sum::<f64>();
         // `max_by` evaluates both sides of each comparison, so every term that depends only on
         // the parent was being recomputed for each candidate pair. Hoisting them keeps the exact
         // same floating-point values while turning several `ln` and `sqrt` calls per node visit
@@ -674,25 +706,29 @@ impl Node {
         let parent_exploration_log = (parent_visits + 1.0).ln();
         let parent_prior_scale = (parent_visits + 1.0).sqrt();
         let prior_denominator = f64::from(prior_total.max(1));
-        mask_bits(mask).max_by(|left, right| {
-            let value = |mv: &Move| {
+        mask_bits(mask)
+            .map(|mv| {
                 let stats = &self.own_moves[mv.as_index()];
-                let visits = stats.visits.load(Ordering::Relaxed) as f64;
-                if visits == 0.0 {
-                    return f64::INFINITY;
-                }
-                let mean =
-                    stats.reward.load(Ordering::Relaxed) as f64 / (visits * f64::from(WIN_REWARD));
-                let prior_bonus = if self.food_guidance {
-                    let prior = f64::from(policy[mv.as_index()]) / prior_denominator;
-                    exploration * prior * parent_prior_scale / (visits + 1.0)
+                // In-flight samples act as temporary zero rewards (virtual loss).
+                let visits = stats.visits.load(Ordering::Relaxed) as f64
+                    + stats.in_flight.load(Ordering::Relaxed) as f64;
+                let value = if visits == 0.0 {
+                    f64::INFINITY
                 } else {
-                    0.0
+                    let mean = stats.reward.load(Ordering::Relaxed) as f64
+                        / (visits * f64::from(WIN_REWARD));
+                    let prior_bonus = if self.food_guidance {
+                        let prior = f64::from(policy[mv.as_index()]) / prior_denominator;
+                        exploration * prior * parent_prior_scale / (visits + 1.0)
+                    } else {
+                        0.0
+                    };
+                    mean + exploration * (parent_exploration_log / visits).sqrt() + prior_bonus
                 };
-                mean + exploration * (parent_exploration_log / visits).sqrt() + prior_bonus
-            };
-            value(left).total_cmp(&value(right))
-        })
+                (mv, value)
+            })
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(mv, _)| mv)
     }
 
     /// Choose only bene-snake's move. Opponent responses are averaged through visits.
@@ -754,23 +790,29 @@ impl Node {
         #[cfg(feature = "tracy")]
         let _tracy_span = tracy_client::span!("child_for_action");
         let key = Action::collect_from(action.iter());
-        if let Some(child) = self.children.lock().unwrap().get(&key) {
+        if let Some(child) = self.children.read().unwrap().get(&key) {
             return ChildResult::Existing(Arc::clone(child));
         }
 
         let next_board = self.board.simulate_single_action(action).1;
         let max_children = 3 + 2 * (self.visits.load(Ordering::Relaxed) as f64).sqrt() as usize;
-        let mut children = self.children.lock().unwrap();
+        let mut children = self.children.write().unwrap();
+        // Another worker may have expanded this action while we simulated it.
+        if let Some(child) = children.get(&key) {
+            return ChildResult::Existing(Arc::clone(child));
+        }
         if children.len() >= max_children {
             return ChildResult::Unstored(next_board);
         }
 
-        let child = Arc::new(Node::new_root_with_options(
+        let mut child = Node::new_root_with_options(
             next_board,
             self.food_guidance,
             self.food_gain_reward,
             self.rollout_depth,
-        ));
+        );
+        child.tree_depth = self.tree_depth;
+        let child = Arc::new(child);
         children.insert(key, Arc::clone(&child));
         ChildResult::Expanded(child)
     }
@@ -866,6 +908,19 @@ fn rollout_from(
     }
 }
 
+/// Own reservations for the entire selected path, including panic cleanup.
+struct SearchPath(ArrayVec<(Arc<Node>, Move), TREE_PATH_CAPACITY>);
+
+impl Drop for SearchPath {
+    fn drop(&mut self) {
+        for (node, mv) in &self.0 {
+            node.own_moves[mv.as_index()]
+                .in_flight
+                .fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 fn search_iteration(
     root: &Arc<Node>,
     you: &SnakeId,
@@ -876,25 +931,28 @@ fn search_iteration(
     let _tracy_span = tracy_client::span!("search_iteration");
     const EXPLORATION: f64 = 1.0;
     stats.iterations += 1;
-    let mut path = ArrayVec::<(Arc<Node>, Move), MAX_TREE_DEPTH>::new();
+    let mut path = SearchPath(ArrayVec::new());
     let mut node = Arc::clone(root);
     let root_length = root.board.get_length(you);
     let result = loop {
         if node.board.is_over() || node.board.get_health(you) == 0 {
             break node.rollout_with_rng(you, stats, rng, root_length);
         }
-        if path.len() == MAX_TREE_DEPTH {
+        if path.0.len() == root.tree_depth {
             stats.tree_depth_limit_hits += 1;
             break node.rollout_with_rng(you, stats, rng, root_length);
         }
         let Some(own_move) = node.select_own_move(*you, EXPLORATION) else {
             break node.rollout_with_rng(you, stats, rng, root_length);
         };
-        let action = node.sample_joint_action(*you, own_move, rng);
-        let child = node.child_for_action(&action);
-        // Transfer this visit into the backup path instead of cloning and then
-        // dropping another Arc when advancing to its child.
-        path.push((node, own_move));
+        // Reserve before expansion or simulation; the guard also releases on unwind.
+        node.own_moves[own_move.as_index()]
+            .in_flight
+            .fetch_add(1, Ordering::Relaxed);
+        path.0.push((node, own_move));
+        let visited = &path.0.last().unwrap().0;
+        let action = visited.sample_joint_action(*you, own_move, rng);
+        let child = visited.child_for_action(&action);
 
         match child {
             ChildResult::Existing(next) => node = next,
@@ -914,9 +972,9 @@ fn search_iteration(
         }
     };
 
-    stats.max_tree_depth = stats.max_tree_depth.max(path.len());
-    for (visited, own_move) in path {
-        visited.record(own_move, result);
+    stats.max_tree_depth = stats.max_tree_depth.max(path.0.len());
+    for (visited, own_move) in &path.0 {
+        visited.record(*own_move, result);
     }
 }
 
@@ -977,6 +1035,101 @@ pub mod bench {
     }
 }
 
+struct WorkerCompletion {
+    remaining: usize,
+    stats: SearchDepthStats,
+    panic: Option<Box<dyn std::any::Any + Send>>,
+}
+
+/// Callers wait outside Rayon: a worker finishing this search must not execute
+/// another game's long-lived job while helping a nested Rayon join.
+struct SearchWorkers<F> {
+    root: Arc<Node>,
+    you: SnakeId,
+    stopped: F,
+    failed: AtomicBool,
+    completion: Mutex<WorkerCompletion>,
+    finished: Condvar,
+}
+
+fn run_workers(
+    root: &Arc<Node>,
+    you: &SnakeId,
+    workers: usize,
+    stopped: impl Fn() -> bool + Send + Sync + 'static,
+) -> SearchDepthStats {
+    assert!((1..=SEARCH_WORKERS).contains(&workers));
+    let group = Arc::new(SearchWorkers {
+        root: Arc::clone(root),
+        you: *you,
+        stopped,
+        failed: AtomicBool::new(false),
+        completion: Mutex::new(WorkerCompletion {
+            remaining: workers,
+            stats: SearchDepthStats::default(),
+            panic: None,
+        }),
+        finished: Condvar::new(),
+    });
+    for _ in 0..workers {
+        let group = Arc::clone(&group);
+        search_pool().spawn(move || {
+            let mut stats = SearchDepthStats::default();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut rng = rand::rng();
+                while !group.failed.load(Ordering::Relaxed) && !(group.stopped)() {
+                    search_iteration(&group.root, &group.you, &mut rng, &mut stats);
+                }
+            }));
+            if result.is_err() {
+                group.failed.store(true, Ordering::Relaxed);
+            }
+            // Merge once per worker, never in the iteration hot path.
+            let mut completion = group.completion.lock().unwrap();
+            completion.stats.iterations += stats.iterations;
+            completion.stats.max_tree_depth =
+                completion.stats.max_tree_depth.max(stats.max_tree_depth);
+            completion.stats.tree_depth_limit_hits += stats.tree_depth_limit_hits;
+            completion.stats.max_rollout_depth = completion
+                .stats
+                .max_rollout_depth
+                .max(stats.max_rollout_depth);
+            completion.stats.rollout_depth_limit_hits += stats.rollout_depth_limit_hits;
+            if let Err(panic) = result {
+                completion.panic.get_or_insert(panic);
+            }
+            completion.remaining -= 1;
+            // No tree mutations occur after reporting completion.
+            if completion.remaining == 0 {
+                group.finished.notify_one();
+            }
+        });
+    }
+    let mut completion = group.completion.lock().unwrap();
+    while completion.remaining != 0 {
+        completion = group.finished.wait(completion).unwrap();
+    }
+    if let Some(panic) = completion.panic.take() {
+        // Release the completion lock before propagating the failure to the caller.
+        drop(completion);
+        std::panic::resume_unwind(panic);
+    }
+    std::mem::take(&mut completion.stats)
+}
+
+/// Run a bounded search on the persistent pool; workers join before returning.
+/// The deadline includes pool scheduling and root preparation, but not tree destruction.
+pub fn search_for(
+    root: &Arc<Node>,
+    you: &SnakeId,
+    duration: Duration,
+    workers: usize,
+) -> SearchDepthStats {
+    let deadline = Instant::now() + duration;
+    root.prepare_escape_guard(*you);
+    run_workers(root, you, workers, move || Instant::now() >= deadline)
+}
+
 pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
     mcts_search_with_publish(root, you, stop, || {});
 }
@@ -989,17 +1142,17 @@ pub fn mcts_search_with_publish(
     publish: impl FnOnce(),
 ) {
     root.prepare_escape_guard(*you);
-    let mut rng = rand::rng();
-    let mut stats = SearchDepthStats::default();
-    while !stop.load(Ordering::Relaxed) {
-        search_iteration(&root, you, &mut rng, &mut stats);
-    }
+    let stats = run_workers(&root, you, SEARCH_WORKERS, move || {
+        stop.load(Ordering::Relaxed)
+    });
+    // All workers finish tree mutations before publishing or retaining nodes.
     publish();
     info!(
+        workers = SEARCH_WORKERS,
         iterations = stats.iterations,
-        max_tree_depth = MAX_TREE_DEPTH,
+        max_tree_depth = root.tree_depth,
         observed_max_tree_depth = stats.max_tree_depth,
-        max_tree_depth_reached = stats.max_tree_depth == MAX_TREE_DEPTH,
+        max_tree_depth_reached = stats.max_tree_depth == root.tree_depth,
         tree_depth_cap_truncated_search = stats.tree_depth_limit_hits > 0,
         tree_depth_limit_hits = stats.tree_depth_limit_hits,
         max_rollout_depth = root.rollout_depth,
@@ -1018,6 +1171,8 @@ mod tests {
     use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
     use rand::SeedableRng;
     use std::{thread, time::Duration};
+
+    static SEARCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn turn33() -> (CellBoard4Snakes11x11, SnakeId, SnakeId) {
         let game: Game = serde_json::from_str(include_str!("../fixtures/turn33-food.json"))
@@ -1102,7 +1257,7 @@ mod tests {
         }
         let (action, child) = root
             .children
-            .lock()
+            .read()
             .unwrap()
             .iter()
             .find(|(_, child)| child.visits() > 0)
@@ -1945,7 +2100,139 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_expansion_keeps_one_child_per_action() {
+        let (board, you, _) = turn33();
+        for _ in 0..32 {
+            let root = Arc::new(Node::new_root(board));
+            let mut rng = rand::rng();
+            let mv = root.select_own_move(you, 1.0).unwrap();
+            let action = root.sample_joint_action(you, mv, &mut rng);
+            let barrier = std::sync::Barrier::new(SEARCH_WORKERS);
+            thread::scope(|scope| {
+                let handles: Vec<_> = (0..SEARCH_WORKERS)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            match root.child_for_action(&action) {
+                                ChildResult::Existing(child) | ChildResult::Expanded(child) => {
+                                    child
+                                }
+                                ChildResult::Unstored(_) => {
+                                    panic!("one action fits the child limit")
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                let children: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+                for child in &children {
+                    assert!(Arc::ptr_eq(child, &children[0]));
+                }
+                assert_eq!(root.children.read().unwrap().len(), 1);
+            });
+        }
+    }
+
+    fn assert_no_reservations(node: &Node) {
+        for stats in &node.own_moves {
+            assert_eq!(stats.in_flight.load(Ordering::Relaxed), 0);
+        }
+        for child in node.children.read().unwrap().values() {
+            assert_no_reservations(child);
+        }
+    }
+
+    #[test]
+    fn reservations_release_on_unwind() {
+        let (board, _, _) = turn33();
+        let root = Arc::new(Node::new_root(board));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut path = SearchPath(ArrayVec::new());
+            root.own_moves[0].in_flight.fetch_add(1, Ordering::Relaxed);
+            path.0.push((Arc::clone(&root), Move::from_index(0)));
+            panic!("simulated search failure");
+        }));
+        assert!(result.is_err());
+        assert_no_reservations(&root);
+    }
+
+    #[test]
+    fn parallel_search_accounts_for_every_iteration_and_joins_before_publication() {
+        let _pool_test = SEARCH_TEST_LOCK.lock().unwrap();
+        let (board, you, _) = turn33();
+        let root = Arc::new(Node::new_root_with_tree_depth(board, 1));
+        let stats = search_for(&root, &you, Duration::from_millis(50), SEARCH_WORKERS);
+        assert!(stats.iterations > 0);
+        assert_eq!(u64::from(root.visits()), stats.iterations);
+        assert_eq!(stats.max_tree_depth, 1);
+        assert!(stats.tree_depth_limit_hits > 0);
+        assert_no_reservations(&root);
+        let cache = SearchTreeCache::after_move(&root, you, root.best_move(you).unwrap());
+        assert!(cache.candidate_count() <= SearchTreeCache::MAX_CANDIDATES);
+
+        let stop = Arc::new(AtomicBool::new(true));
+        mcts_search_with_publish(Arc::clone(&root), &you, stop, || {
+            assert_no_reservations(&root)
+        });
+        assert_eq!(u64::from(root.visits()), stats.iterations);
+    }
+
+    #[test]
+    fn worker_failure_stops_siblings_and_the_pool_remains_usable() {
+        let _pool_test = SEARCH_TEST_LOCK.lock().unwrap();
+        let (board, you, _) = turn33();
+        let root = Arc::new(Node::new_root(board));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_workers(&root, &you, SEARCH_WORKERS, || {
+                panic!("simulated worker failure")
+            });
+        }));
+        assert!(result.is_err());
+        assert_no_reservations(&root);
+        let stats = search_for(&root, &you, Duration::from_millis(30), SEARCH_WORKERS);
+        assert!(stats.iterations > 0);
+        assert_eq!(u64::from(root.visits()), stats.iterations);
+        assert_no_reservations(&root);
+    }
+
+    #[test]
+    fn stopping_one_search_does_not_wait_for_another_games_deadline() {
+        let _pool_test = SEARCH_TEST_LOCK.lock().unwrap();
+        let (board, you, _) = turn33();
+        // Initialize the pool before measuring cancellation.
+        search_for(
+            &Arc::new(Node::new_root(board)),
+            &you,
+            Duration::ZERO,
+            SEARCH_WORKERS,
+        );
+        let first_stop = Arc::new(AtomicBool::new(false));
+        let second_stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            let stop = Arc::clone(&first_stop);
+            scope.spawn(move || {
+                mcts_search_with_publish(Arc::new(Node::new_root(board)), &you, stop, || {
+                    tx.send(()).unwrap();
+                });
+            });
+            thread::sleep(Duration::from_millis(20));
+            let stop = Arc::clone(&second_stop);
+            scope.spawn(move || mcts_search(Arc::new(Node::new_root(board)), &you, stop));
+            thread::sleep(Duration::from_millis(30));
+            first_stop.store(true, Ordering::Relaxed);
+            let result = rx.recv_timeout(Duration::from_millis(100));
+            second_stop.store(true, Ordering::Relaxed);
+            assert!(
+                result.is_ok(),
+                "the stopped search must publish while the other remains active"
+            );
+        });
+    }
+
+    #[test]
     fn search_stops_and_produces_a_legal_move() {
+        let _pool_test = SEARCH_TEST_LOCK.lock().unwrap();
         let (board, you, _) = turn33();
         let root = Arc::new(Node::new_root(board));
         let stop = Arc::new(AtomicBool::new(false));
@@ -1966,6 +2253,7 @@ mod tests {
     #[test]
     #[ignore = "manual replay diagnostic"]
     fn diagnose_turn33_food_choice() {
+        let _pool_test = SEARCH_TEST_LOCK.lock().unwrap();
         let (board, you, _) = turn33();
         for _ in 0..8 {
             let root = Arc::new(Node::new_root(board));
