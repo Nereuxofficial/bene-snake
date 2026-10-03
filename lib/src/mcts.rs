@@ -495,8 +495,7 @@ struct NodeMoveCache {
     masks: ArrayVec<(SnakeId, u8), 4>,
     policies: [[u8; 4]; 4],
     policy_totals: [u32; 4],
-    /// Per-snake tree candidate masks with losing head-to-head contests removed. Only `you`
-    /// ever reads its entry; opponents keep sampling `masks`.
+    /// Per-snake tree masks: opponents also avoid losing contests when an alternative exists.
     tree_masks: [u8; 4],
 }
 
@@ -600,8 +599,10 @@ impl Node {
                 let policy =
                     move_policy(&self.board, &facts, *id, *mask, &food, self.food_guidance);
                 policies[id.as_usize()] = policy.weights;
-                policy_totals[id.as_usize()] = policy.total_weight;
                 tree_masks[id.as_usize()] = pruned_tree_mask(*mask, policy.losing_head_contests);
+                policy_totals[id.as_usize()] = mask_bits(tree_masks[id.as_usize()])
+                    .map(|mv| u32::from(policy.weights[mv.as_index()]))
+                    .sum();
             }
             NodeMoveCache {
                 masks,
@@ -725,12 +726,12 @@ impl Node {
         cache
             .masks
             .iter()
-            .map(|(id, mask)| {
+            .map(|(id, _)| {
                 let mv = if *id == you {
                     own_move
                 } else {
                     sample_policy_move(
-                        *mask,
+                        cache.tree_masks[id.as_usize()],
                         cache.policies[id.as_usize()],
                         cache.policy_totals[id.as_usize()],
                         rng,
@@ -919,12 +920,23 @@ pub fn search_once_with_rng(
 }
 
 pub fn mcts_search(root: Arc<Node>, you: &SnakeId, stop: Arc<AtomicBool>) {
+    mcts_search_with_publish(root, you, stop, || {});
+}
+
+/// Publish only after the search loop stops successfully, before logging or tree cleanup.
+pub fn mcts_search_with_publish(
+    root: Arc<Node>,
+    you: &SnakeId,
+    stop: Arc<AtomicBool>,
+    publish: impl FnOnce(),
+) {
     root.prepare_escape_guard(*you);
     let mut rng = rand::rng();
     let mut stats = SearchDepthStats::default();
     while !stop.load(Ordering::Relaxed) {
         search_iteration(&root, you, &mut rng, &mut stats);
     }
+    publish();
     info!(
         iterations = stats.iterations,
         max_tree_depth = MAX_TREE_DEPTH,
@@ -1352,7 +1364,7 @@ mod tests {
     }
 
     #[test]
-    fn pruning_only_changes_our_tree_candidates() {
+    fn tree_opponents_avoid_losing_contests_but_keep_every_safe_reply() {
         let (board, you, opponents) = board_from_specs(
             &[Position::new(5, 5), Position::new(5, 4)],
             100,
@@ -1390,24 +1402,21 @@ mod tests {
             "the opponent's full move mask still contains the contested move"
         );
 
-        // Opponent sampling consumes the same full mask with the same policy weights.
-        let opponent_mask = cache
-            .masks
-            .iter()
-            .find(|(id, _)| *id == opponent)
-            .map(|(_, mask)| *mask)
-            .unwrap();
-        let mut joint_rng = rand::rngs::SmallRng::seed_from_u64(7);
-        let mut expected_rng = rand::rngs::SmallRng::seed_from_u64(7);
-        let joint = node.sample_joint_action(you, Move::Left, &mut joint_rng);
-        let sampled = joint.iter().find(|(id, _)| *id == opponent).unwrap().1;
-        let expected = sample_policy_move(
-            opponent_mask,
-            cache.policies[opponent.as_usize()],
-            cache.policy_totals[opponent.as_usize()],
-            &mut expected_rng,
-        );
-        assert_eq!(sampled, expected);
+        let mask = cache.tree_masks[opponent.as_usize()];
+        assert_eq!(mask & (1 << Move::Down.as_index()), 0);
+        let expected_total: u32 = mask_bits(mask)
+            .map(|m| u32::from(cache.policies[opponent.as_usize()][m.as_index()]))
+            .sum();
+        assert_eq!(cache.policy_totals[opponent.as_usize()], expected_total);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(7);
+        let mut observed = 0;
+        for _ in 0..4096 {
+            let joint = node.sample_joint_action(you, Move::Left, &mut rng);
+            let mv = joint.iter().find(|(id, _)| *id == opponent).unwrap().1;
+            assert_ne!(mv, Move::Down);
+            observed |= 1 << mv.as_index();
+        }
+        assert_eq!(observed, mask);
     }
 
     #[test]

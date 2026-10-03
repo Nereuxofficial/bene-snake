@@ -67,41 +67,83 @@ fn can_escape(body: Body, remaining: usize, budget: &mut usize) -> bool {
     })
 }
 
-fn region(board: &CellBoard4Snakes11x11, body: Body, start: u8, cap: usize) -> usize {
-    let mut available = [false; 121];
-    for (cell, free) in available.iter_mut().enumerate() {
-        // Single tails are optimistic exits for this soft preference. Stacked
-        // tails and the moved snake's actual body remain blocked.
-        *free = board.cell_is_free(CellIndex::from_usize(cell));
-    }
-    // The old head becomes body and the actual old tail may have moved away.
-    for p in body.cells.iter().take(body.len).skip(1) {
-        available[*p as usize] = false;
-    }
-    available[start as usize] = true;
-    let mut seen = [false; 121];
+const UNREACHABLE: u8 = u8::MAX;
+
+// Each square is queued once; all scratch storage fits on the stack.
+fn distances(available: &[bool; 121], start: u8) -> [u8; 121] {
+    let mut distance = [UNREACHABLE; 121];
     let mut queue = [0u8; 121];
     queue[0] = start;
-    seen[start as usize] = true;
+    distance[start as usize] = 0;
     let (mut read, mut count) = (0, 1);
-    while read < count && count < cap {
+    while read < count {
         let cell = queue[read];
         read += 1;
         for mv in Move::all() {
             if let Some(p) = neighbor(cell, mv)
                 && available[p as usize]
-                && !seen[p as usize]
+                && distance[p as usize] == UNREACHABLE
             {
-                seen[p as usize] = true;
+                distance[p as usize] = distance[cell as usize] + 1;
                 queue[count] = p;
                 count += 1;
-                if count == cap {
-                    break;
-                }
             }
         }
     }
-    count
+    distance
+}
+
+#[derive(Clone, Copy)]
+struct Arrival {
+    distance: u8,
+    length: u16,
+}
+
+struct Space {
+    capacity: usize,
+    exits: u8,
+    food_distance: Option<u8>,
+}
+
+fn region(
+    mut available: [bool; 121],
+    food: &[bool; 121],
+    rivals: &[Arrival; 121],
+    body: Body,
+    health: u8,
+) -> Space {
+    // Block the actual moved body, including stacked growth, while letting the old tail vacate.
+    for p in body.cells.iter().take(body.len).skip(1) {
+        available[*p as usize] = false;
+    }
+    let start = body.cells[0];
+    available[start as usize] = true;
+    let distance = distances(&available, start);
+    let capacity = distance.iter().filter(|&&d| d != UNREACHABLE).count();
+    let exits = Move::all()
+        .iter()
+        .filter(|&&mv| neighbor(start, mv).is_some_and(|p| available[p as usize]))
+        .count() as u8;
+    let food_distance = distance
+        .iter()
+        .enumerate()
+        .filter_map(|(cell, &d)| {
+            // d is measured after our first move. Food at this move's destination has d=0.
+            if !food[cell] || d == UNREACHABLE || d >= health {
+                return None;
+            }
+            let arrival = d + 1;
+            let rival = rivals[cell];
+            let claimed = rival.distance < arrival
+                || (rival.distance == arrival && usize::from(rival.length) >= body.len);
+            (!claimed).then_some(d)
+        })
+        .min();
+    Space {
+        capacity,
+        exits,
+        food_distance,
+    }
 }
 
 pub fn analyze(
@@ -123,6 +165,30 @@ pub fn analyze(
     };
     for (slot, cell) in body.cells.iter_mut().zip(&cells) {
         *slot = cell.as_usize() as u8;
+    }
+    // Root-only static routes: tails may open later, so these are preferences, never death proofs.
+    let available = std::array::from_fn(|cell| board.cell_is_free(CellIndex::from_usize(cell)));
+    let food = std::array::from_fn(|cell| board.is_food(&CellIndex::from_usize(cell)));
+    let mut rivals = [Arrival {
+        distance: UNREACHABLE,
+        length: 0,
+    }; 121];
+    for id in (0..4)
+        .map(SnakeId)
+        .filter(|id| *id != you && board.get_health(id) > 0)
+    {
+        let routes = distances(&available, board.get_head_as_native_position(&id).0);
+        for (cell, distance) in routes.into_iter().enumerate() {
+            if distance == UNREACHABLE || distance > board.get_health(&id) {
+                continue;
+            }
+            let length = board.get_length(&id);
+            if distance < rivals[cell].distance
+                || (distance == rivals[cell].distance && length > rivals[cell].length)
+            {
+                rivals[cell] = Arrival { distance, length };
+            }
+        }
     }
     let mut surviving = 0;
     let mut preferred = weights;
@@ -151,11 +217,15 @@ pub fn analyze(
             if could_win_now || can_escape(next, HORIZON - 1, &mut budget) {
                 surviving |= 1 << index;
             }
-            let capacity = region(board, next, next.cells[0], next.len.min(121));
-            // Equal capacities leave priors unchanged relative to one another.
-            // Bound the preference: a small static region may open as tails move.
-            let factor = 1 + (3 * capacity / next.len).min(3) as u8;
-            preferred[index] = preferred[index].saturating_mul(factor);
+            let space = region(available, &food, &rivals, next, board.get_health(&you));
+            // Bound all preferences: static routes do not account for future tail release,
+            // hazards or opponent movement. Unreachable/contested food gets no route bonus.
+            let factor = 1 + (3 * space.capacity / next.len).min(3) as u8;
+            let food_bonus = space.food_distance.map_or(0, |d| 24 / (1 + d));
+            preferred[index] = preferred[index]
+                .saturating_mul(factor)
+                .saturating_add(food_bonus)
+                .saturating_add(space.exits.min(3) * 2);
         }
     }
     EscapeAnalysis {
@@ -184,6 +254,82 @@ mod tests {
         assert!(body.step(1, false).is_none());
         assert!(body.step(0, false).is_none());
     }
+    #[test]
+    fn food_routes_follow_a_detour_and_exclude_unreachable_food() {
+        let mut available = [true; 121];
+        for y in 0..10 {
+            available[y * 11 + 1] = false;
+        }
+        let mut food = [false; 121];
+        food[2] = true;
+        let rivals = [Arrival {
+            distance: UNREACHABLE,
+            length: 0,
+        }; 121];
+        let body = Body {
+            cells: [0; 128],
+            len: 1,
+        };
+        let space = region(available, &food, &rivals, body, 100);
+        assert_eq!(space.food_distance, Some(22)); // Manhattan distance is only two.
+        assert_eq!(space.exits, 1);
+        assert_eq!(
+            region(available, &food, &rivals, body, 22).food_distance,
+            None
+        );
+        available[111] = false; // Seal the remaining opening in the wall.
+        assert_eq!(
+            region(available, &food, &rivals, body, 100).food_distance,
+            None
+        );
+    }
+
+    #[test]
+    fn food_arrival_accounts_for_first_move_and_relative_length() {
+        let available = [true; 121];
+        let mut food = [false; 121];
+        food[22] = true;
+        let mut rivals = [Arrival {
+            distance: UNREACHABLE,
+            length: 0,
+        }; 121];
+        let mut body = Body {
+            cells: [0; 128],
+            len: 3,
+        };
+        body.cells[..3].copy_from_slice(&[12, 1, 0]);
+        assert_eq!(
+            region(available, &food, &rivals, body, 100).food_distance,
+            Some(2)
+        );
+        rivals[22] = Arrival {
+            distance: 3,
+            length: 2,
+        };
+        assert_eq!(
+            region(available, &food, &rivals, body, 100).food_distance,
+            Some(2)
+        );
+        rivals[22].length = 3;
+        assert_eq!(
+            region(available, &food, &rivals, body, 100).food_distance,
+            None
+        );
+        rivals[22] = Arrival {
+            distance: 2,
+            length: 1,
+        };
+        assert_eq!(
+            region(available, &food, &rivals, body, 100).food_distance,
+            None
+        );
+        food[12] = true; // Immediate food is reachable at health one, before starvation.
+        assert_eq!(
+            region(available, &food, &rivals, body, 1).food_distance,
+            Some(0)
+        );
+    }
+
     #[test]
     fn exhausted_budget_does_not_claim_a_trap() {
         let body = Body {

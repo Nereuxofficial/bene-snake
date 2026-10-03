@@ -184,7 +184,7 @@ fn destination(game: &Game, head: Position, mv: Move) -> Position {
     }
 }
 
-fn physical_moves(game: &Game, snake: &BattleSnake, conservative_tails: bool) -> [bool; 4] {
+fn physical_moves(game: &Game, snake: &BattleSnake) -> [bool; 4] {
     let mut moves = [false; 4];
     for mv in Move::all() {
         let p = destination(game, snake.head, mv);
@@ -213,23 +213,13 @@ fn physical_moves(game: &Game, snake: &BattleSnake, conservative_tails: bool) ->
                     .filter(|s| !game.board.snakes.iter().any(|other| other.id == s.id)),
             )
             .any(|other| {
-                // An opponent tail is only guaranteed to vacate when it cannot eat this turn.
-                let might_eat = game.board.food.iter().any(|f| {
-                    Move::all()
-                        .iter()
-                        .any(|m| destination(game, other.head, *m) == *f)
-                });
-                let vacates = if other.id == snake.id {
-                    !food
-                } else {
-                    !conservative_tails || !might_eat
-                };
-                other.body.iter().enumerate().any(|(i, cell)| {
-                    *cell == p
-                        && !(vacates
-                            && i + 1 == other.body.len()
-                            && (i == 0 || other.body[i - 1] != *cell))
-                })
+                // Standard movement pops the old tail before feeding duplicates the new tail.
+                // A stacked tail remains occupied by its preceding segment.
+                other
+                    .body
+                    .iter()
+                    .take(other.body.len().saturating_sub(1))
+                    .any(|cell| *cell == p)
             });
         if !blocked {
             moves[mv.as_index()] = true;
@@ -244,13 +234,13 @@ pub struct ResponseMoves {
 }
 
 pub fn response_moves(game: &Game) -> ResponseMoves {
-    let physical = physical_moves(game, &game.you, true);
+    let physical = physical_moves(game, &game.you);
     let mut safe = physical;
     for other in &game.board.snakes {
         if other.id == game.you.id || other.health <= 0 || other.body.len() < game.you.body.len() {
             continue;
         }
-        let replies = physical_moves(game, other, false);
+        let replies = physical_moves(game, other);
         for mv in Move::all() {
             if Move::all().iter().any(|reply| {
                 replies[reply.as_index()]
@@ -279,7 +269,10 @@ pub fn response_moves(game: &Game) -> ResponseMoves {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
+    use battlesnake_game_types::{
+        compact_representation::standard::CellBoard4Snakes11x11,
+        types::{HealthGettableGame, ReasonableMovesGame, SimulableGame},
+    };
 
     #[test]
     fn captured_death_sequences_match_replay_and_convert() {
@@ -366,14 +359,50 @@ mod tests {
     }
 
     #[test]
-    fn fallback_does_not_enter_stacked_or_growing_opponent_tail() {
+    fn fallback_can_enter_a_vacating_tail_even_when_its_owner_eats() {
         let mut game = game_with_bodies(&[&[(1, 1), (1, 0), (0, 0)], &[(2, 3), (2, 2), (2, 1)]]);
         assert!(response_moves(&game).acceptable[Move::Right.as_index()]);
         game.board.food.push(Position::new(3, 3));
-        assert!(!response_moves(&game).acceptable[Move::Right.as_index()]);
+        assert!(response_moves(&game).acceptable[Move::Right.as_index()]);
         game.board.food.clear();
         game.board.snakes[1].body.push_back(Position::new(2, 1));
         assert!(!response_moves(&game).acceptable[Move::Right.as_index()]);
+    }
+
+    #[test]
+    fn captured_arena_tail_entries_match_simulated_survival() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/tail-entry-arena.json")).unwrap();
+        for case in cases {
+            let mut game: Game = serde_json::from_value(case["request"].clone()).unwrap();
+            let mut state = GameState::new(&game);
+            state.normalize(&mut game).unwrap();
+            let escape = Move::all()
+                .into_iter()
+                .find(|mv| serde_json::to_value(mv).unwrap() == case["escape"])
+                .unwrap();
+            let response = response_moves(&game);
+            assert!(response.acceptable[escape.as_index()], "{}", game.game.id);
+            assert_eq!(response.fallback, escape);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&state.ids).unwrap();
+            let moves = board.reasonable_moves_for_each_snake();
+            let replies: Vec<_> = moves
+                .iter()
+                .map(|(id, moves)| {
+                    (
+                        *id,
+                        if *id == SnakeId(0) {
+                            vec![escape]
+                        } else {
+                            moves.to_vec()
+                        },
+                    )
+                })
+                .collect();
+            for (_, after) in board.simulate_with_moves(&replies) {
+                assert!(after.get_health(&SnakeId(0)) > 0, "{}", game.game.id);
+            }
+        }
     }
 
     #[test]

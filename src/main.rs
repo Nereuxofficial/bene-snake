@@ -11,7 +11,7 @@ use battlesnake_game_types::types::{Move, SnakeIDGettableGame, YouDeterminableGa
 use battlesnake_game_types::wire_representation::Game;
 use game_state::{GameState, ResponseMoves, response_moves};
 use git_version::git_version;
-use lib::mcts::{Node, SearchTreeCache, mcts_search};
+use lib::mcts::{Node, SearchTreeCache, mcts_search_with_publish};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -30,6 +30,8 @@ const MAX_CACHED_GAMES: usize = 16;
 const GAME_STATE_TTL: Duration = Duration::from_secs(300);
 // Leave room for response serialization and the public network path.
 const RESPONSE_RESERVE: Duration = Duration::from_millis(185);
+// Spend at most 20 ms of that reserve waiting for a stopped worker's published result.
+const SEARCH_STOP_GRACE: Duration = Duration::from_millis(20);
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -217,46 +219,56 @@ async fn get_move(body: String) -> Json<Value> {
         return Json(json!({"move": fallback}));
     };
     let carried_visits = root_node.visits();
-    let root_node_clone = root_node.clone();
     let stop = StopSearch(Arc::new(AtomicBool::new(false)));
     let stop_for_search = Arc::clone(&stop.0);
     let game_id = decoded.game_id.clone();
     let turn = decoded.turn;
-    let task = tokio::task::spawn_blocking(move || {
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let worker_moves = ResponseMoves {
+        fallback,
+        acceptable: decoded.response_moves.acceptable,
+    };
+    tokio::task::spawn_blocking(move || {
         let _span = tracing::info_span!("search", game_id = %game_id, turn).entered();
-        mcts_search(root_node_clone, &you, stop_for_search);
+        mcts_search_with_publish(root_node.clone(), &you, stop_for_search, || {
+            // Only this worker reads its tree, after successful search completion.
+            let result = validated_search_result(true, &worker_moves, || {
+                let chosen = root_node.best_move(you)?;
+                Some((chosen, SearchTreeCache::after_move(&root_node, you, chosen)))
+            });
+            // The handler need not wait for telemetry or destruction of the unused tree.
+            let _ = result_tx.send(result);
+        });
     });
     let budget = search_budget(decoded.timeout_ms, start.elapsed());
-    let worker_finished = wait_for_search(task, stop, budget).await;
-    // Never inspect a failed/running worker's potentially poisoned tree. Validate
-    // successful search output against the independent normalized wire fallback.
+    // Short deadlines retain the same delivery cushion: do not wait past timeout - 165 ms.
+    let delivery_reserve = RESPONSE_RESERVE - SEARCH_STOP_GRACE;
+    let available = Duration::from_millis(decoded.timeout_ms.max(0) as u64)
+        .saturating_sub(start.elapsed())
+        .saturating_sub(delivery_reserve);
+    let grace = available.saturating_sub(budget).min(SEARCH_STOP_GRACE);
+    let outcome = wait_for_search(result_rx, stop, budget, grace).await;
+    let result_published = outcome.is_some();
     let mut chosen_move = fallback;
     let mut retained_candidates = 0;
     let mut used_fallback = true;
-    if worker_finished {
-        match validated_search_result(worker_finished, &decoded.response_moves, || {
-            let chosen = root_node.best_move(you)?;
-            let candidates = SearchTreeCache::after_move(&root_node, you, chosen);
-            Some((chosen, candidates))
-        }) {
-            Some((chosen, candidates)) => {
-                chosen_move = chosen;
-                used_fallback = false;
-                retained_candidates = candidates.candidate_count();
-                store_search_candidates(decoded.game_id.clone(), decoded.turn, candidates);
-            }
-            _ => {
-                error!(game_id = %decoded.game_id, turn = decoded.turn, "Invalid search result; using fallback")
-            }
+    match outcome {
+        Some(Some((chosen, candidates))) => {
+            chosen_move = chosen;
+            used_fallback = false;
+            retained_candidates = candidates.candidate_count();
+            store_search_candidates(decoded.game_id.clone(), decoded.turn, candidates);
         }
-    } else {
-        error!(game_id = %decoded.game_id, turn = decoded.turn, "Search worker failed or did not stop; using fallback");
+        Some(None) => {
+            error!(game_id = %decoded.game_id, turn = decoded.turn, "Invalid search result; using fallback");
+        }
+        None => {
+            error!(game_id = %decoded.game_id, turn = decoded.turn, "Search worker failed or did not publish; using fallback");
+        }
     }
-    // Destruction of a large, failed search tree must not delay serialization.
-    tokio::task::spawn_blocking(move || drop(root_node));
     info!(game_id = %decoded.game_id, turn = decoded.turn,
         chosen_move = %chosen_move, elapsed = ?start.elapsed(), reused, carried_visits,
-        retained_candidates, worker_finished, used_fallback, "MCTS move completed");
+        retained_candidates, result_published, used_fallback, "MCTS move completed");
     Json(json!({"move": chosen_move}))
 }
 
@@ -274,16 +286,19 @@ fn validated_search_result(
         .filter(|(chosen, _)| moves.acceptable[chosen.as_index()])
 }
 
-async fn wait_for_search(
-    mut task: tokio::task::JoinHandle<()>,
+async fn wait_for_search<T>(
+    mut result: tokio::sync::oneshot::Receiver<T>,
     stop: StopSearch,
     budget: Duration,
-) -> bool {
+    grace: Duration,
+) -> Option<T> {
+    let search_deadline = tokio::time::Instant::now() + budget;
+    let publication_deadline = search_deadline + grace;
     tokio::select! {
-        result = &mut task => { drop(stop); result.is_ok() }
-        _ = tokio::time::sleep(budget) => {
+        result = &mut result => { drop(stop); result.ok() }
+        _ = tokio::time::sleep_until(search_deadline) => {
             drop(stop);
-            matches!(tokio::time::timeout(Duration::from_millis(5), task).await, Ok(Ok(())))
+            tokio::time::timeout_at(publication_deadline, result).await.ok().and_then(Result::ok)
         }
     }
 }
@@ -482,13 +497,19 @@ mod tests {
     }
     #[tokio::test]
     async fn panicked_worker_returns_fallback_without_reading_tree() {
-        let worker = tokio::task::spawn_blocking(|| panic!("injected worker failure"));
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::task::spawn_blocking(move || {
+            let _tx = tx;
+            panic!("injected worker failure");
+        });
         let finished = wait_for_search(
-            worker,
+            rx,
             StopSearch(Arc::new(AtomicBool::new(false))),
             Duration::from_secs(1),
+            SEARCH_STOP_GRACE,
         )
-        .await;
+        .await
+        .is_some();
         let moves = ResponseMoves {
             fallback: Move::Left,
             acceptable: [true; 4],
@@ -505,11 +526,20 @@ mod tests {
     #[tokio::test]
     async fn worker_that_does_not_stop_is_not_read_or_cached() {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let worker = tokio::task::spawn_blocking(move || {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::task::spawn_blocking(move || {
+            let _tx = tx;
             let _ = release_rx.recv();
         });
         let flag = Arc::new(AtomicBool::new(false));
-        let finished = wait_for_search(worker, StopSearch(flag.clone()), Duration::ZERO).await;
+        let finished = wait_for_search(
+            rx,
+            StopSearch(flag.clone()),
+            Duration::ZERO,
+            SEARCH_STOP_GRACE,
+        )
+        .await
+        .is_some();
         assert!(!finished);
         assert!(flag.load(Ordering::Relaxed));
         let moves = ResponseMoves {
@@ -523,6 +553,46 @@ mod tests {
             .is_none()
         );
         release_tx.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn published_result_does_not_wait_for_worker_cleanup() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            tx.send(Move::Left).unwrap();
+            // Simulate slow telemetry or tree destruction after publication.
+            release_rx.recv().unwrap();
+        });
+        let result = wait_for_search(
+            rx,
+            StopSearch(Arc::new(AtomicBool::new(false))),
+            Duration::from_secs(1),
+            SEARCH_STOP_GRACE,
+        )
+        .await;
+        assert_eq!(result, Some(Move::Left));
+        assert!(!worker.is_finished());
+        release_tx.send(()).unwrap();
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn result_published_after_stop_is_received_within_grace() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let flag = Arc::new(AtomicBool::new(false));
+        let worker_flag = flag.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            while !worker_flag.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            tx.send(Move::Right).unwrap();
+        });
+        assert_eq!(
+            wait_for_search(rx, StopSearch(flag), Duration::ZERO, Duration::from_secs(1)).await,
+            Some(Move::Right)
+        );
+        worker.await.unwrap();
     }
 
     #[test]

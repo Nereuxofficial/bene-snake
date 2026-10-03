@@ -78,16 +78,12 @@ pub fn evaluate_board_with_food(
         let opp_length = cellboard.get_length(&opp_id);
         let dist_to_opponent = manhattan_distance(&head_pos, &opp_head);
 
-        if dist_to_opponent == 1 {
-            if opp_length >= my_length {
-                score -= 100; // Avoid head-to-head with larger snakes
-            } else {
-                score += 30; // Bonus for potential head-to-head win
-            }
+        if dist_to_opponent == 1 && opp_length >= my_length {
+            score -= 100; // Avoid being next to larger snakes
         }
 
         if my_length > opp_length {
-            score += 3; // Bonus for being longer
+            score += 30; // Bonus for being longer
         }
     }
 
