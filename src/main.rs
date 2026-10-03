@@ -29,7 +29,7 @@ const TREE_CACHE_TTL: Duration = Duration::from_secs(90);
 const MAX_CACHED_GAMES: usize = 16;
 const GAME_STATE_TTL: Duration = Duration::from_secs(300);
 // Leave room for response serialization and the public network path.
-const RESPONSE_RESERVE: Duration = Duration::from_millis(185);
+const RESPONSE_RESERVE: Duration = Duration::from_millis(70);
 // Spend at most 20 ms of that reserve waiting for a stopped worker's published result.
 const SEARCH_STOP_GRACE: Duration = Duration::from_millis(20);
 #[global_allocator]
