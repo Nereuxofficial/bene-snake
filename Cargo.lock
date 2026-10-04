@@ -296,6 +296,7 @@ dependencies = [
  "color-eyre",
  "dotenvy",
  "git-version",
+ "http-body",
  "lib",
  "mimalloc",
  "sentry",
@@ -919,6 +920,7 @@ dependencies = [
 name = "gym"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "battlesnake-game-types",
  "clap",
  "colored",
@@ -929,6 +931,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tabled",
+ "tokio",
 ]
 
 [[package]]

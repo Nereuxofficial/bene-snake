@@ -31,7 +31,7 @@ use battlesnake_game_types::{
 const MAX_ROLLOUT_DEPTH: u32 = 24;
 const MAX_TREE_DEPTH: usize = 64;
 const TREE_PATH_CAPACITY: usize = 128;
-pub const SEARCH_WORKERS: usize = 8;
+pub const SEARCH_WORKERS: usize = 12;
 
 fn search_pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -459,6 +459,8 @@ enum ChildResult {
 /// observed board then. Keeping only visited children avoids retaining an empty tree.
 pub struct SearchTreeCache {
     candidates: Vec<Arc<Node>>,
+    response_weights: Vec<u32>,
+    remaining_ponder_visits: AtomicU32,
     you: SnakeId,
     root_length: u16,
 }
@@ -489,8 +491,13 @@ impl SearchTreeCache {
             true
         });
         candidates.truncate(Self::MAX_CANDIDATES);
+        let response_weights: Vec<u32> = candidates.iter().map(|child| child.visits()).collect();
+        let remaining_ponder_visits =
+            Self::MAX_RETAINED_VISITS - response_weights.iter().sum::<u32>();
         Self {
             candidates,
+            response_weights,
+            remaining_ponder_visits: AtomicU32::new(remaining_ponder_visits),
             you,
             root_length: root.board.get_length(&you),
         }
@@ -500,14 +507,75 @@ impl SearchTreeCache {
         self.candidates.len()
     }
 
-    pub fn match_observed(self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Option<Arc<Node>> {
+    pub fn retained_visits(&self) -> u64 {
+        self.candidates
+            .iter()
+            .map(|child| u64::from(child.visits()))
+            .sum()
+    }
+
+    pub fn match_observed(&self, board: &CellBoard4Snakes11x11, you: SnakeId) -> Option<Arc<Node>> {
         // Old reward samples use the former root's length as their food-gain baseline.
         if you != self.you || board.get_length(&you) != self.root_length {
             return None;
         }
         self.candidates
-            .into_iter()
+            .iter()
             .find(|child| child.board == *board)
+            .cloned()
+    }
+
+    /// Advance one possible next-turn root on the caller's thread. Response weights
+    /// stay fixed at publication so pondering cannot bias its own scheduling.
+    /// The visit limit also bounds further node allocations between requests.
+    pub fn ponder_once(&self, stats: &mut SearchDepthStats) -> bool {
+        self.ponder_once_with_rng(stats, &mut rand::rng())
+    }
+
+    fn ponder_once_with_rng(&self, stats: &mut SearchDepthStats, rng: &mut impl Rng) -> bool {
+        if self.remaining_ponder_visits.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+        let eligible = |child: &Arc<Node>| {
+            // Searching from a grown root would mix different food-gain baselines.
+            child.board.get_length(&self.you) == self.root_length
+                && child.board.get_health(&self.you) > 0
+                && !child.board.is_over()
+        };
+        let total: u32 = self
+            .candidates
+            .iter()
+            .zip(&self.response_weights)
+            .filter(|(child, _)| eligible(child))
+            .map(|(_, weight)| *weight)
+            .sum();
+        if total == 0 {
+            return false;
+        }
+        let mut choice = rng.random_range(0..total);
+        for (child, weight) in self.candidates.iter().zip(&self.response_weights) {
+            if !eligible(child) {
+                continue;
+            }
+            if choice < *weight {
+                // Reserve a visit before searching: concurrent downtime workers
+                // must include in-flight iterations in the cache's memory limit.
+                if self
+                    .remaining_ponder_visits
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+                child.prepare_escape_guard(self.you);
+                search_iteration(child, &self.you, rng, stats);
+                return true;
+            }
+            choice -= *weight;
+        }
+        unreachable!("weighted response selection must find a candidate")
     }
 }
 
@@ -1277,6 +1345,137 @@ mod tests {
         let mut cache = SearchTreeCache::after_move(&root, you, chosen);
         cache.root_length = cache.root_length.saturating_add(1);
         assert!(cache.match_observed(&child.board, you).is_none());
+    }
+
+    #[test]
+    fn pondering_advances_reusable_children_without_changing_the_previous_root() {
+        let (board, you, _) = policy_fixture(Vec::new(), 100, false);
+        let root = Arc::new(Node::new_root(board));
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(491);
+        let mut stats = SearchDepthStats::default();
+        for _ in 0..500 {
+            search_once_with_rng(&root, &you, &mut stats, &mut rng);
+        }
+        let cache = SearchTreeCache::after_move(&root, you, root.best_move(you).unwrap());
+        let before: Vec<_> = cache.candidates.iter().map(|node| node.visits()).collect();
+        assert!(!before.is_empty());
+        let root_visits = root.visits();
+        let weights = cache.response_weights.clone();
+        let mut pondering = SearchDepthStats::default();
+        for _ in 0..64 {
+            assert!(cache.ponder_once_with_rng(&mut pondering, &mut rng));
+        }
+        assert_eq!(pondering.iterations, 64);
+        assert_eq!(root.visits(), root_visits);
+        assert_eq!(cache.response_weights, weights);
+        assert_eq!(
+            cache
+                .candidates
+                .iter()
+                .map(|node| node.visits())
+                .sum::<u32>(),
+            before.iter().sum::<u32>() + 64
+        );
+        let advanced = cache
+            .candidates
+            .iter()
+            .zip(before)
+            .find(|(node, visits)| node.visits() > *visits)
+            .map(|(node, _)| node)
+            .unwrap();
+        let reused = cache.match_observed(&advanced.board, you).unwrap();
+        assert!(Arc::ptr_eq(advanced, &reused));
+        assert_eq!(reused.visits(), advanced.visits());
+    }
+
+    #[test]
+    fn pondering_stops_at_retained_visit_limit_and_skips_incompatible_roots() {
+        let (board, you, _) = policy_fixture(Vec::new(), 100, false);
+        let child = Arc::new(Node::new_root(board));
+        child
+            .visits
+            .store(SearchTreeCache::MAX_RETAINED_VISITS - 1, Ordering::Relaxed);
+        let mut cache = SearchTreeCache {
+            candidates: vec![Arc::clone(&child)],
+            response_weights: vec![1],
+            remaining_ponder_visits: AtomicU32::new(1),
+            you,
+            root_length: board.get_length(&you),
+        };
+        let mut stats = SearchDepthStats::default();
+        assert!(cache.ponder_once(&mut stats));
+        assert_eq!(child.visits(), SearchTreeCache::MAX_RETAINED_VISITS);
+        assert!(!cache.ponder_once(&mut stats));
+        assert_eq!(stats.iterations, 1);
+
+        child.visits.store(1, Ordering::Relaxed);
+        cache
+            .remaining_ponder_visits
+            .store(SearchTreeCache::MAX_RETAINED_VISITS - 1, Ordering::Relaxed);
+        cache.root_length += 1;
+        assert!(!cache.ponder_once(&mut stats));
+        assert_eq!(child.visits(), 1);
+        assert_eq!(stats.iterations, 1);
+
+        let (terminal, you, _) = board_from_specs(
+            &[Position::new(5, 5), Position::new(5, 4)],
+            90,
+            &[],
+            Vec::new(),
+        );
+        assert!(terminal.is_over());
+        let terminal = Arc::new(Node::new_root(terminal));
+        let terminal_cache = SearchTreeCache {
+            root_length: terminal.board.get_length(&you),
+            candidates: vec![terminal],
+            response_weights: vec![1],
+            remaining_ponder_visits: AtomicU32::new(SearchTreeCache::MAX_RETAINED_VISITS),
+            you,
+        };
+        assert!(!terminal_cache.ponder_once(&mut stats));
+        assert_eq!(stats.iterations, 1);
+    }
+
+    #[test]
+    fn parallel_pondering_reserves_in_flight_visits_without_exceeding_the_limit() {
+        const WORKERS: usize = 8;
+        const REMAINING: u32 = 23;
+        let (board, you, _) = policy_fixture(Vec::new(), 100, false);
+        let child = Arc::new(Node::new_root(board));
+        child.visits.store(
+            SearchTreeCache::MAX_RETAINED_VISITS - REMAINING,
+            Ordering::Relaxed,
+        );
+        let cache = SearchTreeCache {
+            candidates: vec![Arc::clone(&child)],
+            response_weights: vec![1],
+            remaining_ponder_visits: AtomicU32::new(REMAINING),
+            you,
+            root_length: board.get_length(&you),
+        };
+        let barrier = std::sync::Barrier::new(WORKERS);
+        let iterations: u64 = thread::scope(|scope| {
+            let handles: Vec<_> = (0..WORKERS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let mut stats = SearchDepthStats::default();
+                        while cache.ponder_once(&mut stats) {}
+                        stats.iterations
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .sum()
+        });
+        assert_eq!(iterations, u64::from(REMAINING));
+        assert_eq!(
+            cache.retained_visits(),
+            u64::from(SearchTreeCache::MAX_RETAINED_VISITS)
+        );
+        assert_no_reservations(&child);
     }
 
     fn policy_fixture(

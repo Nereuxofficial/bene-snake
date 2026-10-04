@@ -41,6 +41,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 dotenvy = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["macros"] }
+http-body = "1.0"
 battlesnake-game-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
