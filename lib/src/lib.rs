@@ -4,3 +4,5 @@ pub mod eval;
 pub mod mcts;
 
 pub use agent::{Agent, MctsAgent};
+#[cfg(feature = "tracy")]
+tracy_client::register_demangler!();

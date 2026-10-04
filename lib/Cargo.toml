@@ -14,7 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true, features = ["simd_support"] }
 
-tracy-client = { version = "=0.19.0", optional = true }
+tracy-client = { version = "=0.19.0", optional = true, features = ["demangle"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
