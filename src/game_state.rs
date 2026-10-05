@@ -4,13 +4,15 @@ use battlesnake_game_types::{
     wire_representation::{BattleSnake, Game, Position},
 };
 use color_eyre::eyre::{Result, ensure};
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 pub struct GameState {
     pub ids: SnakeIDMap,
     last: Option<(i32, BTreeMap<String, Position>)>,
     dead: BTreeMap<String, i32>,
     pub touched: Instant,
+    pub search_turn: i32,
+    pub search_generation: Arc<()>,
 }
 
 impl GameState {
@@ -30,6 +32,8 @@ impl GameState {
             last: None,
             dead: BTreeMap::new(),
             touched: Instant::now(),
+            search_turn: game.turn,
+            search_generation: Arc::new(()),
         }
     }
 
