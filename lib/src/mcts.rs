@@ -460,14 +460,16 @@ enum ChildResult {
 pub struct SearchTreeCache {
     candidates: Vec<Arc<Node>>,
     response_weights: Vec<u32>,
-    remaining_ponder_visits: AtomicU32,
+    remaining_ponder_iterations: AtomicU32,
     you: SnakeId,
     root_length: u16,
 }
 
 impl SearchTreeCache {
-    // A visit expands at most one node, so retained visits bound retained nodes.
-    const MAX_RETAINED_VISITS: u32 = 20_000;
+    // Keep publication work small even after a long foreground search. Visits are
+    // evidence, not storage: a heavily visited node may have very few descendants.
+    const MAX_SNAPSHOT_NODES: usize = 2_048;
+    const MAX_RETAINED_NODES: u32 = 20_000;
     const MAX_CANDIDATES: usize = 32;
 
     pub fn after_move(root: &Arc<Node>, you: SnakeId, chosen: Move) -> Self {
@@ -482,22 +484,22 @@ impl SearchTreeCache {
             .map(|(_, child)| Arc::clone(child))
             .collect();
         candidates.sort_unstable_by_key(|child| std::cmp::Reverse(child.visits()));
-        let mut retained_visits = 0u32;
-        candidates.retain(|child| {
-            if retained_visits.saturating_add(child.visits()) > Self::MAX_RETAINED_VISITS {
-                return false;
-            }
-            retained_visits += child.visits();
-            true
-        });
         candidates.truncate(Self::MAX_CANDIDATES);
         let response_weights: Vec<u32> = candidates.iter().map(|child| child.visits()).collect();
-        let remaining_ponder_visits =
-            Self::MAX_RETAINED_VISITS - response_weights.iter().sum::<u32>();
+        let budgets = snapshot_budgets(&candidates, Self::MAX_SNAPSHOT_NODES);
+        let mut retained_nodes = 0;
+        let candidates = candidates
+            .iter()
+            .zip(budgets)
+            .map(|(child, budget)| child.retained_snapshot(budget, &mut retained_nodes))
+            .collect();
+        // A pondering iteration expands at most one node. Reserve its allocation
+        // allowance before starting, including iterations concurrently in flight.
+        let remaining_ponder_iterations = Self::MAX_RETAINED_NODES - retained_nodes;
         Self {
             candidates,
             response_weights,
-            remaining_ponder_visits: AtomicU32::new(remaining_ponder_visits),
+            remaining_ponder_iterations: AtomicU32::new(remaining_ponder_iterations),
             you,
             root_length: root.board.get_length(&you),
         }
@@ -527,13 +529,14 @@ impl SearchTreeCache {
 
     /// Advance one possible next-turn root on the caller's thread. Response weights
     /// stay fixed at publication so pondering cannot bias its own scheduling.
-    /// The visit limit also bounds further node allocations between requests.
+    /// The iteration allowance bounds further node allocations between requests,
+    /// independently of the historical visits carried by the snapshot.
     pub fn ponder_once(&self, stats: &mut SearchDepthStats) -> bool {
         self.ponder_once_with_rng(stats, &mut rand::rng())
     }
 
     fn ponder_once_with_rng(&self, stats: &mut SearchDepthStats, rng: &mut impl Rng) -> bool {
-        if self.remaining_ponder_visits.load(Ordering::Relaxed) == 0 {
+        if self.remaining_ponder_iterations.load(Ordering::Relaxed) == 0 {
             return false;
         }
         let eligible = |child: &Arc<Node>| {
@@ -542,12 +545,12 @@ impl SearchTreeCache {
                 && child.board.get_health(&self.you) > 0
                 && !child.board.is_over()
         };
-        let total: u32 = self
+        let total: u64 = self
             .candidates
             .iter()
             .zip(&self.response_weights)
             .filter(|(child, _)| eligible(child))
-            .map(|(_, weight)| *weight)
+            .map(|(_, weight)| u64::from(*weight))
             .sum();
         if total == 0 {
             return false;
@@ -557,11 +560,11 @@ impl SearchTreeCache {
             if !eligible(child) {
                 continue;
             }
-            if choice < *weight {
+            if choice < u64::from(*weight) {
                 // Reserve a visit before searching: concurrent downtime workers
                 // must include in-flight iterations in the cache's memory limit.
                 if self
-                    .remaining_ponder_visits
+                    .remaining_ponder_iterations
                     .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                         remaining.checked_sub(1)
                     })
@@ -573,12 +576,33 @@ impl SearchTreeCache {
                 search_iteration(child, &self.you, rng, stats);
                 return true;
             }
-            choice -= *weight;
+            choice -= u64::from(*weight);
         }
         unreachable!("weighted response selection must find a candidate")
     }
 }
 
+/// Allocate at least one root per response, then divide remaining storage by visits.
+/// Inputs are sorted by visits; rounding goes to the most likely response.
+fn snapshot_budgets(nodes: &[Arc<Node>], budget: usize) -> Vec<usize> {
+    assert!(nodes.len() <= budget);
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+    let extra = budget - nodes.len();
+    let total: u64 = nodes
+        .iter()
+        .map(|node| u64::from(node.visits().max(1)))
+        .sum();
+    let mut budgets: Vec<_> = nodes
+        .iter()
+        .map(|node| 1 + (extra as u64 * u64::from(node.visits().max(1)) / total) as usize)
+        .collect();
+    budgets[0] += budget - budgets.iter().sum::<usize>();
+    budgets
+}
+
+#[derive(Clone)]
 struct NodeMoveCache {
     /// Reasonable-move masks, shared with opponents and rollouts. The tree no longer selects
     /// from this directly; it is the fallback when pruning contests all moves.
@@ -590,6 +614,55 @@ struct NodeMoveCache {
 }
 
 impl Node {
+    /// Copy a bounded subtree without retaining any links to the original search.
+    /// Workers must have stopped before publication. Edge evidence remains useful
+    /// even when descendants are omitted; in-flight reservations never carry over.
+    fn retained_snapshot(&self, budget: usize, retained_nodes: &mut u32) -> Arc<Self> {
+        assert!(budget > 0);
+        let mut snapshot = Self::new_root_with_options(
+            self.board,
+            self.food_guidance,
+            self.food_gain_reward,
+            self.rollout_depth,
+        );
+        snapshot.escape_guard_enabled = self.escape_guard_enabled;
+        snapshot.tree_depth = self.tree_depth;
+        snapshot.visits.store(self.visits(), Ordering::Relaxed);
+        for (target, source) in snapshot.own_moves.iter().zip(&self.own_moves) {
+            target
+                .visits
+                .store(source.visits.load(Ordering::Relaxed), Ordering::Relaxed);
+            target
+                .reward
+                .store(source.reward.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        if let Some(cache) = self.move_cache.get() {
+            snapshot.move_cache = OnceLock::from(cache.clone());
+        }
+        *retained_nodes += 1;
+        if budget > 1 {
+            let mut children: Vec<_> = self
+                .children
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(action, child)| (*action, Arc::clone(child)))
+                .collect();
+            children.sort_by_key(|(_, child)| std::cmp::Reverse(child.visits()));
+            children.truncate(budget - 1);
+            let nodes: Vec<_> = children
+                .iter()
+                .map(|(_, child)| Arc::clone(child))
+                .collect();
+            let budgets = snapshot_budgets(&nodes, budget - 1);
+            let kept = snapshot.children.get_mut().unwrap();
+            for ((action, child), budget) in children.into_iter().zip(budgets) {
+                kept.insert(action, child.retained_snapshot(budget, retained_nodes));
+            }
+        }
+        Arc::new(snapshot)
+    }
+
     fn rollout_options(&self) -> RolloutOptions {
         RolloutOptions {
             food_guidance: self.food_guidance,
@@ -1315,6 +1388,145 @@ mod tests {
     }
 
     #[test]
+    fn tree_cache_retains_heavily_visited_responses_with_bounded_detached_storage() {
+        fn tree(board: CellBoard4Snakes11x11, depth: usize) -> Arc<Node> {
+            let node = Arc::new(Node::new_root(board));
+            node.visits.store(200_000, Ordering::Relaxed);
+            node.own_moves[Move::Up.as_index()]
+                .visits
+                .store(150_000, Ordering::Relaxed);
+            node.own_moves[Move::Up.as_index()]
+                .reward
+                .store(90_000_000, Ordering::Relaxed);
+            if depth > 0 {
+                for mv in Move::all() {
+                    node.children.write().unwrap().insert(
+                        Action::new([Some(mv), None, None, None]),
+                        tree(board, depth - 1),
+                    );
+                }
+            }
+            node
+        }
+        let (board, you, _) = policy_fixture(Vec::new(), 100, false);
+        let root = Arc::new(Node::new_root(board));
+        for mv in Move::all() {
+            root.children.write().unwrap().insert(
+                Action::new([Some(Move::Up), Some(mv), None, None]),
+                tree(board, 5),
+            );
+        }
+        let source_nodes: usize = root
+            .children
+            .read()
+            .unwrap()
+            .values()
+            .map(count_nodes)
+            .sum();
+        assert!(source_nodes > SearchTreeCache::MAX_SNAPSHOT_NODES);
+        let cache = SearchTreeCache::after_move(&root, you, Move::Up);
+        assert_eq!(cache.candidate_count(), 4);
+        assert_eq!(cache.retained_visits(), 800_000);
+        let retained_nodes: usize = cache.candidates.iter().map(count_nodes).sum();
+        assert_eq!(retained_nodes, SearchTreeCache::MAX_SNAPSHOT_NODES);
+        assert_eq!(
+            cache.remaining_ponder_iterations.load(Ordering::Relaxed),
+            SearchTreeCache::MAX_RETAINED_NODES - retained_nodes as u32
+        );
+        for snapshot in &cache.candidates {
+            assert_eq!(
+                snapshot.own_moves[Move::Up.as_index()]
+                    .visits
+                    .load(Ordering::Relaxed),
+                150_000
+            );
+            assert_eq!(
+                snapshot.own_moves[Move::Up.as_index()]
+                    .reward
+                    .load(Ordering::Relaxed),
+                90_000_000
+            );
+            assert!(
+                root.children
+                    .read()
+                    .unwrap()
+                    .values()
+                    .all(|source| !Arc::ptr_eq(snapshot, source))
+            );
+            assert_no_reservations(snapshot);
+        }
+        // No Arc to the previous tree is retained by a bounded snapshot.
+        let originals: Vec<_> = root
+            .children
+            .read()
+            .unwrap()
+            .values()
+            .map(Arc::downgrade)
+            .collect();
+        drop(root);
+        assert!(originals.iter().all(|source| source.upgrade().is_none()));
+        assert!(cache.match_observed(&board, you).is_some());
+        assert!(cache.match_observed(&board, SnakeId(1)).is_none());
+        let (changed_health, _, _) = policy_fixture(Vec::new(), 99, false);
+        assert!(cache.match_observed(&changed_health, you).is_none());
+        let (changed_food, _, _) = policy_fixture(vec![Position::new(0, 0)], 100, false);
+        assert!(cache.match_observed(&changed_food, you).is_none());
+    }
+
+    fn count_nodes(root: &Arc<Node>) -> usize {
+        1 + root
+            .children
+            .read()
+            .unwrap()
+            .values()
+            .map(count_nodes)
+            .sum::<usize>()
+    }
+
+    #[test]
+    fn heavily_visited_small_snapshot_leaves_room_for_pondering() {
+        let (board, you, _) = policy_fixture(Vec::new(), 100, false);
+        let root = Arc::new(Node::new_root(board));
+        let child = Arc::new(Node::new_root(board));
+        child.visits.store(200_000, Ordering::Relaxed);
+        root.children.write().unwrap().insert(
+            Action::new([Some(Move::Up), None, None, None]),
+            Arc::clone(&child),
+        );
+        let cache = SearchTreeCache::after_move(&root, you, Move::Up);
+        assert_eq!(cache.candidate_count(), 1);
+        assert_eq!(
+            cache.remaining_ponder_iterations.load(Ordering::Relaxed),
+            SearchTreeCache::MAX_RETAINED_NODES - 1
+        );
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(919);
+        let mut stats = SearchDepthStats::default();
+        assert!(cache.ponder_once_with_rng(&mut stats, &mut rng));
+        assert_eq!(cache.retained_visits(), 200_001);
+        assert_eq!(child.visits(), 200_000);
+        assert!(cache.candidates.iter().map(count_nodes).sum::<usize>() <= 2);
+    }
+
+    #[test]
+    fn retained_growth_response_keeps_the_food_reward_baseline_guard() {
+        let (board, you, opponent) = policy_fixture(vec![Position::new(4, 5)], 100, false);
+        let action = [(you, Move::Left), (opponent, Move::Right)];
+        let next = board.simulate_single_action(&action).1;
+        assert_eq!(next.get_length(&you), board.get_length(&you) + 1);
+        let root = Arc::new(Node::new_root(board));
+        let child = Arc::new(Node::new_root(next));
+        child.visits.store(200_000, Ordering::Relaxed);
+        root.children
+            .write()
+            .unwrap()
+            .insert(Action::collect_from(action.iter()), child);
+        let cache = SearchTreeCache::after_move(&root, you, Move::Left);
+        assert_eq!(cache.candidate_count(), 1);
+        assert!(cache.match_observed(&next, you).is_none());
+        assert!(!cache.ponder_once(&mut SearchDepthStats::default()));
+    }
+
+    #[test]
     fn tree_cache_reuses_only_an_exact_same_length_child() {
         let (board, you, _) = turn33();
         let root = Arc::new(Node::new_root(board));
@@ -1337,10 +1549,10 @@ mod tests {
         assert!(cache.match_observed(&board, you).is_none());
 
         let cache = SearchTreeCache::after_move(&root, you, chosen);
-        assert!(Arc::ptr_eq(
-            &cache.match_observed(&child.board, you).unwrap(),
-            &child
-        ));
+        let retained = cache.match_observed(&child.board, you).unwrap();
+        assert!(!Arc::ptr_eq(&retained, &child));
+        assert_eq!(retained.board, child.board);
+        assert_eq!(retained.visits(), child.visits());
 
         let mut cache = SearchTreeCache::after_move(&root, you, chosen);
         cache.root_length = cache.root_length.saturating_add(1);
@@ -1389,29 +1601,27 @@ mod tests {
     }
 
     #[test]
-    fn pondering_stops_at_retained_visit_limit_and_skips_incompatible_roots() {
+    fn pondering_stops_at_allocation_allowance_and_skips_incompatible_roots() {
         let (board, you, _) = policy_fixture(Vec::new(), 100, false);
         let child = Arc::new(Node::new_root(board));
-        child
-            .visits
-            .store(SearchTreeCache::MAX_RETAINED_VISITS - 1, Ordering::Relaxed);
+        child.visits.store(200_000, Ordering::Relaxed);
         let mut cache = SearchTreeCache {
             candidates: vec![Arc::clone(&child)],
             response_weights: vec![1],
-            remaining_ponder_visits: AtomicU32::new(1),
+            remaining_ponder_iterations: AtomicU32::new(1),
             you,
             root_length: board.get_length(&you),
         };
         let mut stats = SearchDepthStats::default();
         assert!(cache.ponder_once(&mut stats));
-        assert_eq!(child.visits(), SearchTreeCache::MAX_RETAINED_VISITS);
+        assert_eq!(child.visits(), 200_001);
         assert!(!cache.ponder_once(&mut stats));
         assert_eq!(stats.iterations, 1);
 
         child.visits.store(1, Ordering::Relaxed);
         cache
-            .remaining_ponder_visits
-            .store(SearchTreeCache::MAX_RETAINED_VISITS - 1, Ordering::Relaxed);
+            .remaining_ponder_iterations
+            .store(SearchTreeCache::MAX_RETAINED_NODES - 1, Ordering::Relaxed);
         cache.root_length += 1;
         assert!(!cache.ponder_once(&mut stats));
         assert_eq!(child.visits(), 1);
@@ -1429,7 +1639,7 @@ mod tests {
             root_length: terminal.board.get_length(&you),
             candidates: vec![terminal],
             response_weights: vec![1],
-            remaining_ponder_visits: AtomicU32::new(SearchTreeCache::MAX_RETAINED_VISITS),
+            remaining_ponder_iterations: AtomicU32::new(SearchTreeCache::MAX_RETAINED_NODES),
             you,
         };
         assert!(!terminal_cache.ponder_once(&mut stats));
@@ -1442,14 +1652,11 @@ mod tests {
         const REMAINING: u32 = 23;
         let (board, you, _) = policy_fixture(Vec::new(), 100, false);
         let child = Arc::new(Node::new_root(board));
-        child.visits.store(
-            SearchTreeCache::MAX_RETAINED_VISITS - REMAINING,
-            Ordering::Relaxed,
-        );
+        child.visits.store(200_000, Ordering::Relaxed);
         let cache = SearchTreeCache {
             candidates: vec![Arc::clone(&child)],
             response_weights: vec![1],
-            remaining_ponder_visits: AtomicU32::new(REMAINING),
+            remaining_ponder_iterations: AtomicU32::new(REMAINING),
             you,
             root_length: board.get_length(&you),
         };
@@ -1471,11 +1678,9 @@ mod tests {
                 .sum()
         });
         assert_eq!(iterations, u64::from(REMAINING));
-        assert_eq!(
-            cache.retained_visits(),
-            u64::from(SearchTreeCache::MAX_RETAINED_VISITS)
-        );
+        assert_eq!(cache.retained_visits(), 200_000 + u64::from(REMAINING));
         assert_no_reservations(&child);
+        assert!(count_nodes(&child) <= 1 + REMAINING as usize);
     }
 
     fn policy_fixture(
