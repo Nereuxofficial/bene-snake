@@ -3,7 +3,7 @@ use battlesnake_game_types::{
     compact_representation::standard::moves_from_mask, types::HeadGettableGame,
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use lib::{eval::evaluate_board_with_food, mcts::bench::sample_rollout_moves};
+use lib::{eval::evaluate_board, mcts::bench::sample_rollout_moves};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -66,16 +66,10 @@ fn bench_hotpaths(c: &mut Criterion) {
         });
     }
     simulation.finish();
-    let mut eval = c.benchmark_group("leaf_evaluate_supplied_food");
+    let mut eval = c.benchmark_group("leaf_evaluate");
     for f in &fixtures {
         eval.bench_function(&f.name, |b| {
-            b.iter(|| {
-                black_box(evaluate_board_with_food(
-                    black_box(&f.board),
-                    black_box(&f.you),
-                    black_box(&f.food),
-                ))
-            })
+            b.iter(|| black_box(evaluate_board(black_box(&f.board), black_box(&f.you))))
         });
     }
     eval.finish();

@@ -9,24 +9,9 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
     (a.x - b.x).abs() + (a.y - b.y).abs()
 }
 
-/// Lightweight evaluation function optimized for MCTS.
+/// Score a board using health, length, mobility, food distance and opponent geometry.
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
-    let food = cellboard.get_all_food_as_positions();
-    evaluate_board_with_food(cellboard, you, &food)
-}
-
-/// [`evaluate_board`], with the board's food positions supplied by the caller.
-///
-/// Scoring a leaf needs only the distance to the nearest food, but `get_all_food_as_positions`
-/// walks every cell of the board to build the list. A rollout already tracks exactly which cells
-/// hold food, because it has to keep the list correct as food is eaten, so passing it in removes
-/// a full board scan from every leaf evaluation. Passing the board's own list is equivalent, which
-/// `supplied_food_list_matches_the_board_scan` pins.
-pub fn evaluate_board_with_food(
-    cellboard: &CellBoard4Snakes11x11,
-    you: &SnakeId,
-    food_positions: &[Position],
-) -> u16 {
+    let food_positions = cellboard.get_all_food_as_positions();
     let health = cellboard.get_health(you);
     if health == 0 {
         return 0;
@@ -65,12 +50,14 @@ pub fn evaluate_board_with_food(
 
     // 5. Opponent awareness - avoid dangerous head-to-head collisions
     for opponent_id in 0..4 {
+        //TODO: Check if it would improve performance to subtract opponents length/health from us?
         let opp_id = SnakeId(opponent_id);
         if opp_id == *you {
             continue;
         }
 
         if cellboard.get_health(&opp_id) == 0 {
+            score += 50;
             continue;
         }
 
@@ -95,7 +82,7 @@ pub fn evaluate_board_with_food(
 mod tests {
     use super::*;
     use battlesnake_game_types::{
-        types::{Move, build_snake_id_map},
+        types::build_snake_id_map,
         wire_representation::Game,
     };
 
@@ -154,10 +141,6 @@ mod tests {
                 evaluate_board(&outer, &outer_you),
                 evaluate_board(&inner, &inner_you)
             );
-            assert_eq!(
-                evaluate_board_with_food(&outer, &outer_you, &outer.get_all_food_as_positions()),
-                evaluate_board_with_food(&inner, &inner_you, &inner.get_all_food_as_positions())
-            );
         }
     }
 
@@ -203,46 +186,6 @@ mod tests {
             "Start of game should have positive score, got {}",
             score
         );
-    }
-
-    #[test]
-    fn supplied_food_list_matches_the_board_scan() {
-        // Passing the board's own food list must score identically to letting the evaluator scan
-        // for it, across every snake on every fixture and after a simulated step.
-        for fixture in [
-            include_str!("../fixtures/turn33-food.json"),
-            include_str!("../../battlesnake-game-types/fixtures/start_of_game.json"),
-            include_str!("../../battlesnake-game-types/fixtures/late_stage.json"),
-            include_str!("../../battlesnake-game-types/fixtures/tail_chase.json"),
-            include_str!("../../battlesnake-game-types/fixtures/goes_for_food.json"),
-        ] {
-            let game: Game = serde_json::from_str(fixture).expect("valid fixture");
-            let ids = build_snake_id_map(&game);
-            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).expect("valid board");
-            let moves: Vec<_> = board
-                .reasonable_move_masks()
-                .iter()
-                .map(|(id, mask)| (*id, mv_for(mask)))
-                .collect();
-            let after = board.simulate_single_action(&moves).1;
-
-            for subject in [board, after] {
-                let food = subject.get_all_food_as_positions();
-                for index in 0..4 {
-                    let you = SnakeId(index);
-                    assert_eq!(
-                        evaluate_board_with_food(&subject, &you, &food),
-                        evaluate_board(&subject, &you),
-                        "{fixture} {you:?} supplied food list"
-                    );
-                }
-            }
-        }
-    }
-
-    fn mv_for(mask: &u8) -> Move {
-        // `reasonable_move_masks` never yields an empty mask, so this always names a real move.
-        Move::from_index(mask.trailing_zeros() as usize)
     }
 
     #[test]

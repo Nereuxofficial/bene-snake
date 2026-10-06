@@ -72,6 +72,18 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         self.healths.iter()
     }
 
+    /// The heads of every living snake, paired with the owning `SnakeId`, in `SnakeId` order.
+    /// One pass over `healths` decides the living set, and only living slots are read out of
+    /// `heads`, so a dead snake costs one load instead of a load plus an iterator step. `heads` is
+    /// indexed by the same slot as `healths`, so the index below is always in bounds.
+    pub fn iter_living_heads(&self) -> impl Iterator<Item = (SnakeId, CellIndex<T>)> + '_ {
+        self.healths
+            .iter()
+            .enumerate()
+            .filter(|(_, health)| **health > 0)
+            .map(|(index, _)| (SnakeId(index as u8), self.heads[index]))
+    }
+
     /// Asserts that all tails eventually loop back to a head and panics if the board is inconsistent
     pub fn assert_consistency(&self) -> bool {
         #[cfg(debug_assertions)]

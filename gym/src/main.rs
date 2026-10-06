@@ -1,16 +1,15 @@
-use std::time::Duration;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 
-mod agents;
-mod runner;
-mod stats;
+use gym::{agents, runner, stats};
 
 use agents::{
     HeuristicAgent, HeuristicPolicy, MctsAgent, MinimaxAgent, MinimaxPolicy, RandomAgent,
 };
+use gym::viewer::{self, ReplayStore};
 use lib::Agent;
 use runner::{GameConfig, run_game, run_game_seeded};
 use stats::{HeadToHeadStats, TournamentStats};
@@ -20,12 +19,31 @@ use stats::{HeadToHeadStats, TournamentStats};
 #[command(about = "Benchmarking gym for pitting bene-snake against other snake implementations")]
 #[command(version)]
 struct Cli {
+    /// Serve the live viewer and record completed games
+    #[arg(long, global = true)]
+    web: bool,
+
+    /// Address for the browser viewer
+    #[arg(long, global = true, default_value = "127.0.0.1:8050")]
+    web_bind: SocketAddr,
+
+    /// Directory containing saved game replays
+    #[arg(long, global = true, default_value = "gym-replays")]
+    replay_dir: PathBuf,
+
+    /// Pause after each published turn for easier live viewing (requires --web)
+    #[arg(long, global = true, default_value = "0", requires = "web")]
+    turn_delay: u64,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Browse recorded games without starting new games
+    Serve,
+
     /// Run a tournament between multiple agents
     Tournament {
         /// Number of games to run
@@ -151,10 +169,52 @@ impl AgentType {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if !cli.web && !matches!(cli.command, Commands::Serve) {
+        execute(cli.command, None);
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?
+        .block_on(run_viewer(cli))
+}
 
-    match cli.command {
+async fn run_viewer(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let store = ReplayStore::open(cli.replay_dir, Duration::from_millis(cli.turn_delay))?;
+    let listener = tokio::net::TcpListener::bind(cli.web_bind).await?;
+    eprintln!(
+        "Gym viewer: http://{} ({} saved games)",
+        listener.local_addr()?,
+        store.summaries().len()
+    );
+    eprintln!("The viewer stays open when games finish. Press Ctrl-C to stop.");
+    let server =
+        tokio::spawn(axum::serve(listener, viewer::router(Arc::clone(&store))).into_future());
+    let mut worker = tokio::task::spawn_blocking(move || execute(cli.command, Some(&store)));
+    tokio::select! {
+        result = &mut worker => {
+            result?;
+            tokio::select! {
+                result = server => { result??; }
+                result = tokio::signal::ctrl_c() => { result?; }
+            }
+        }
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            // Blocking agent searches cannot be cancelled by dropping a task.
+            // Completed replays are already on disk; exit promptly on Ctrl-C.
+            std::process::exit(0);
+        }
+    }
+    Ok(())
+}
+
+fn execute(command: Commands, viewer: Option<&Arc<ReplayStore>>) {
+    match command {
+        Commands::Serve => {}
         Commands::Tournament {
             games,
             agents,
@@ -167,11 +227,14 @@ fn main() {
             run_tournament_cmd(
                 games,
                 &agents,
-                mcts_time,
-                minimax_depth,
-                max_turns,
-                parallel,
-                json,
+                RunOptions {
+                    mcts_time,
+                    minimax_depth,
+                    max_turns,
+                    parallel,
+                    json_output: json,
+                    viewer,
+                },
             );
         }
         Commands::Duel {
@@ -189,12 +252,15 @@ fn main() {
                 agent1,
                 agent2,
                 games,
-                mcts_time,
-                minimax_depth,
-                max_turns,
-                parallel,
-                json,
                 seed,
+                RunOptions {
+                    mcts_time,
+                    minimax_depth,
+                    max_turns,
+                    parallel,
+                    json_output: json,
+                    viewer,
+                },
             );
         }
         Commands::Benchmark {
@@ -202,20 +268,44 @@ fn main() {
             mcts_times,
             parallel,
         } => {
-            run_benchmark_cmd(games, &mcts_times, parallel);
+            run_benchmark_cmd(games, &mcts_times, parallel, viewer);
         }
     }
 }
 
-fn run_tournament_cmd(
-    num_games: usize,
-    agent_types: &[AgentType],
+fn run_visible_game(
+    agents: &[&dyn Agent],
+    config: &GameConfig,
+    seed: Option<u64>,
+    viewer: Option<&Arc<ReplayStore>>,
+) -> stats::GameResult {
+    if let Some(viewer) = viewer {
+        return viewer.run_game(agents, config, seed);
+    }
+    seed.map_or_else(
+        || run_game(agents, config),
+        |seed| run_game_seeded(agents, config, seed),
+    )
+}
+
+struct RunOptions<'a> {
     mcts_time: u64,
     minimax_depth: u32,
     max_turns: u32,
     parallel: bool,
     json_output: bool,
-) {
+    viewer: Option<&'a Arc<ReplayStore>>,
+}
+
+fn run_tournament_cmd(num_games: usize, agent_types: &[AgentType], options: RunOptions<'_>) {
+    let RunOptions {
+        mcts_time,
+        minimax_depth,
+        max_turns,
+        parallel,
+        json_output,
+        viewer,
+    } = options;
     if !json_output {
         println!("\n{}", "=== Snake Gym Tournament ===".green().bold());
         println!("Games: {} | Max turns: {}", num_games, max_turns);
@@ -260,7 +350,7 @@ fn run_tournament_cmd(
         (0..num_games)
             .into_par_iter()
             .map(|_| {
-                let result = run_game(&agent_refs, &config);
+                let result = run_visible_game(&agent_refs, &config, None, viewer);
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -270,7 +360,7 @@ fn run_tournament_cmd(
     } else {
         (0..num_games)
             .map(|_| {
-                let result = run_game(&agent_refs, &config);
+                let result = run_visible_game(&agent_refs, &config, None, viewer);
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -297,13 +387,17 @@ fn run_duel_cmd(
     agent1_type: AgentType,
     agent2_type: AgentType,
     num_games: usize,
-    mcts_time: u64,
-    minimax_depth: u32,
-    max_turns: u32,
-    parallel: bool,
-    json_output: bool,
     seed: Option<u64>,
+    options: RunOptions<'_>,
 ) {
+    let RunOptions {
+        mcts_time,
+        minimax_depth,
+        max_turns,
+        parallel,
+        json_output,
+        viewer,
+    } = options;
     if !json_output {
         println!("\n{}", "=== Snake Gym Duel ===".green().bold());
         println!("{:?} vs {:?}", agent1_type, agent2_type);
@@ -345,7 +439,14 @@ fn run_duel_cmd(
         (0..num_games)
             .into_par_iter()
             .map(|index| {
-                let result = run_duel_game(index, seed, agent1.as_ref(), agent2.as_ref(), &config);
+                let result = run_duel_game(
+                    index,
+                    seed,
+                    agent1.as_ref(),
+                    agent2.as_ref(),
+                    &config,
+                    viewer,
+                );
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -355,7 +456,14 @@ fn run_duel_cmd(
     } else {
         (0..num_games)
             .map(|index| {
-                let result = run_duel_game(index, seed, agent1.as_ref(), agent2.as_ref(), &config);
+                let result = run_duel_game(
+                    index,
+                    seed,
+                    agent1.as_ref(),
+                    agent2.as_ref(),
+                    &config,
+                    viewer,
+                );
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
@@ -417,6 +525,7 @@ fn run_duel_game(
     agent1: &dyn Agent,
     agent2: &dyn Agent,
     config: &GameConfig,
+    viewer: Option<&Arc<ReplayStore>>,
 ) -> stats::GameResult {
     let swapped = duel_seat_swapped(index);
     let agents = if swapped {
@@ -424,9 +533,11 @@ fn run_duel_game(
     } else {
         [agent1, agent2]
     };
-    let mut result = base_seed.map_or_else(
-        || run_game(&agents, config),
-        |seed| run_game_seeded(&agents, config, duel_seed_for_index(seed, index)),
+    let mut result = run_visible_game(
+        &agents,
+        config,
+        base_seed.map(|seed| duel_seed_for_index(seed, index)),
+        viewer,
     );
 
     // Convert the winner back from the seat order used for this game into the
@@ -445,7 +556,12 @@ fn swap_duel_winner(seat: usize) -> usize {
     }
 }
 
-fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool) {
+fn run_benchmark_cmd(
+    games_per_config: usize,
+    mcts_times: &[u64],
+    parallel: bool,
+    viewer: Option<&Arc<ReplayStore>>,
+) {
     println!("\n{}", "=== Snake Gym Benchmark ===".green().bold());
     println!("Testing MCTS at different think times against Random baseline");
     println!("Games per config: {}", games_per_config);
@@ -478,7 +594,7 @@ fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool
             (0..games_per_config)
                 .into_par_iter()
                 .map(|_| {
-                    let result = run_game(&agents, &config);
+                    let result = run_visible_game(&agents, &config, None, viewer);
                     pb.inc(1);
                     result
                 })
@@ -486,7 +602,7 @@ fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool
         } else {
             (0..games_per_config)
                 .map(|_| {
-                    let result = run_game(&agents, &config);
+                    let result = run_visible_game(&agents, &config, None, viewer);
                     pb.inc(1);
                     result
                 })
@@ -509,14 +625,6 @@ fn run_benchmark_cmd(games_per_config: usize, mcts_times: &[u64], parallel: bool
     }
 
     println!();
-}
-
-// Extension trait for GameConfig
-impl GameConfig {
-    fn with_max_turns(mut self, max_turns: u32) -> Self {
-        self.max_turns = max_turns;
-        self
-    }
 }
 
 #[cfg(test)]

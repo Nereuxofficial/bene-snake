@@ -49,6 +49,16 @@ pub type CellBoard8Snakes25x25 = CellBoard<u16, Custom, { 25 * 25 }, 8>;
 /// Used to represent an absolutely silly game board
 pub type CellBoard16Snakes50x50 = CellBoard<u16, Custom, { 50 * 50 }, 16>;
 
+/// The distance at which two heads contest a cell next turn.
+///
+/// Both snakes move at once, so a contest exists as soon as the cells they can claim overlap,
+/// where a snake can claim its own cell (an opponent moving onto it) plus the four cells one step
+/// away. With four-way movement that is exactly a Manhattan distance of 2 or less: 2 apart means
+/// they meet in the middle, 1 apart means each can move onto the other's head, and 3 apart leaves
+/// the closest cells they could move to still 2 apart, so neither can claim the same cell.
+/// `contest_radius_equals_sharing_a_cell_next_turn` pins that against a brute force over positions.
+pub const CONTEST_RADIUS: usize = 2;
+
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
@@ -130,6 +140,73 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         count
     }
 
+    /// Manhattan distance between two cells, straight from their cell indices: one divide and one
+    /// multiply per cell, no `Position` built. Hot paths that compare many cells should use this
+    /// rather than converting to positions first.
+    #[inline]
+    pub fn cell_distance(&self, a: CellIndex<T>, b: CellIndex<T>) -> usize {
+        let width = usize::from(self.embedded.get_actual_width());
+        let (a, b) = (a.as_usize(), b.as_usize());
+        let (a_row, a_column) = (a / width, a % width);
+        let (b_row, b_column) = (b / width, b % width);
+        a_row.abs_diff(b_row) + a_column.abs_diff(b_column)
+    }
+
+    /// True when the two cells are one step apart: up, down, left, or right.
+    ///
+    /// For valid board cells, vertical neighbours are exactly `width` apart. Cells one apart
+    /// are only neighbours when the lower one is not in the last column, which one modulo
+    /// answers without decomposing both cells into rows and columns.
+    #[inline]
+    pub fn cells_are_adjacent(&self, a: CellIndex<T>, b: CellIndex<T>) -> bool {
+        let width = usize::from(self.embedded.get_actual_width());
+        let (a, b) = (a.as_usize(), b.as_usize());
+        let difference = a.abs_diff(b);
+        if difference == width {
+            return true;
+        }
+        if difference != 1 {
+            return false;
+        }
+        a.min(b) % width != width - 1
+    }
+
+    /// True when the two cells are at most `radius` steps apart. `radius == 1` is
+    /// adjacency or equality; [`Self::cells_are_adjacent`] alone excludes equality.
+    #[inline]
+    pub fn cells_are_within(&self, a: CellIndex<T>, b: CellIndex<T>, radius: usize) -> bool {
+        if radius == 1 {
+            a == b || self.cells_are_adjacent(a, b)
+        } else {
+            self.cell_distance(a, b) <= radius
+        }
+    }
+
+    /// True when some living snake other than `snake` has its head within `radius` steps of
+    /// `cell`. One pass over the heads; a contest for a shared cell next turn is
+    /// [`CONTEST_RADIUS`].
+    pub fn other_head_within(&self, snake: SnakeId, cell: CellIndex<T>, radius: usize) -> bool {
+        if radius == 1 {
+            return self.all_heads_with_ids().any(|(id, head)| {
+                id != snake && (cell == head || self.cells_are_adjacent(cell, head))
+            });
+        }
+        let width = usize::from(self.embedded.get_actual_width());
+        // Decompose the query cell once instead of once per head: the divide is not hoisted out of
+        // the scan on its own, and doing it up front measured 27-33% faster than asking
+        // `cells_are_within` per head, which re-divides the same cell every time.
+        let cell = cell.as_usize();
+        let (cell_row, cell_column) = (cell / width, cell % width);
+        self.all_heads_with_ids().any(|(id, head)| {
+            if id == snake {
+                return false;
+            }
+            let head = head.as_usize();
+            let (head_row, head_column) = (head / width, head % width);
+            cell_row.abs_diff(head_row) + cell_column.abs_diff(head_column) <= radius
+        })
+    }
+
     /// Bit `Move::as_index()` is set for every move that does not immediately kill the snake at
     /// `head`. Computed straight from cell indices, so callers that only need the mask never
     /// build positions.
@@ -184,6 +261,50 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
             is_own_neck: cell.get_snake_id() == Some(snake) && cell.get_next_index() == Some(head),
         }
     }
+
+    /// Heuristic for rollout depth, considers the following:
+    /// - Whether we have less than two reasonable moves
+    /// - Whether a nearby rival head could land on one of the same cells we could
+    ///
+    /// Both snakes move at once, so a conflict is a shared destination rather than a shared
+    /// starting cell: each mask's destinations are compared, and the nearby filter cannot hide a
+    /// collision because two heads one step from the same cell are within `CONTEST_RADIUS`.
+    /// `tactical_conflict_matches_a_destination_collision_reference` pins that against a
+    /// position-based reference.
+    pub fn has_unresolved_tactical_conflict(&self, you: SnakeId) -> bool {
+        let head_index = self.get_head_as_native_position(&you);
+        let our_moves = self.reasonable_move_mask(head_index);
+        // A mask is a set of move bits, so "fewer than two moves" is a bit count, not a
+        // comparison against 2: a mask of 4 is two moves (up and left), not four.
+        if our_moves.count_ones() < 2 {
+            return true;
+        }
+        let width = usize::from(self.embedded.get_actual_width()) as isize;
+        let head_base = head_index.as_usize() as isize;
+        // Only a rival head within CONTEST_RADIUS can reach a cell we also reach: a shared
+        // destination means each head is at most one step from it, so the filter costs nothing in
+        // recall and saves computing a rival's mask for far away heads.
+        self.all_heads_with_ids().any(|(id, their_head)| {
+            if id == you || !self.cells_are_within(head_index, their_head, CONTEST_RADIUS) {
+                return false;
+            }
+            let their_moves = self.reasonable_move_mask(their_head);
+            let their_base = their_head.as_usize() as isize;
+            // Destinations are compared as index arithmetic rather than collected into arrays:
+            // both masks only hold on-board moves, so stepping an index cannot wrap a row, and
+            // building the destination lists cost more than the comparison itself.
+            Move::all_iter().any(|ours| {
+                if our_moves & (1 << ours.as_index()) == 0 {
+                    return false;
+                }
+                let ours = head_base + move_step(ours, width);
+                Move::all_iter().any(|theirs| {
+                    their_moves & (1 << theirs.as_index()) != 0
+                        && ours == their_base + move_step(theirs, width)
+                })
+            })
+        })
+    }
 }
 
 /// One candidate destination, with the flags a move policy needs. Reading them together keeps
@@ -211,6 +332,21 @@ impl<T: CN> MoveTarget<T> {
             is_hazard: false,
             is_own_neck: false,
         }
+    }
+}
+
+/// How far a move steps a cell index on a board `width` cells wide.
+///
+/// Only valid for a move from `reasonable_move_mask`, which never sets a bit for a move that leaves
+/// the board, so stepping an index cannot wrap into another row. That is what makes this cheaper
+/// than building a `Position` per move.
+#[inline]
+fn move_step(mv: Move, width: isize) -> isize {
+    match mv {
+        Move::Left => -1,
+        Move::Right => 1,
+        Move::Down => -width,
+        Move::Up => width,
     }
 }
 
@@ -254,6 +390,29 @@ fn choose_from_legal_mask(legal_mask: u8, rng: &mut impl Rng) -> Move {
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
 {
+    /// The native head cell of every living snake, in `SnakeId` order. Reads the head array
+    /// directly instead of asking for one snake at a time, so the whole set costs a single pass
+    /// over `MAX_SNAKES` slots. Dead snakes are skipped, matching the per-snake health check.
+    ///
+    /// ```
+    /// # use battlesnake_game_types::compact_representation::standard::CellBoard4Snakes11x11;
+    /// # fn check(board: &CellBoard4Snakes11x11) {
+    /// for head in board.all_heads() {
+    ///     // heads are already cell indices, so no position arithmetic is needed
+    ///     println!("{}", board.cell_is_free(head));
+    /// }
+    /// # }
+    /// ```
+    pub fn all_heads(&self) -> impl Iterator<Item = CellIndex<T>> + '_ {
+        self.all_heads_with_ids().map(|(_, head)| head)
+    }
+
+    /// `all_heads` together with the snake that owns each head, in `SnakeId` order. For callers
+    /// that would otherwise look a head up again by id.
+    pub fn all_heads_with_ids(&self) -> impl Iterator<Item = (SnakeId, CellIndex<T>)> + '_ {
+        self.embedded.iter_living_heads()
+    }
+
     /// The reasonable-move mask of every living snake, without building a `MoveArray` per
     /// snake. Hot paths that only test or iterate moves should prefer this. A snake with no
     /// reasonable move reports the same `Move::Up` fallback the list-based API uses.
@@ -284,16 +443,10 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         &'a self,
         rng: &'a mut impl Rng,
     ) -> impl std::iter::Iterator<Item = (SnakeId, Move)> + 'a {
-        self.embedded
-            .iter_healths()
-            .enumerate()
-            .filter(|(_, health)| **health > 0)
-            .map(move |(idx, _)| {
-                let sid = SnakeId(idx as u8);
-                let mask =
-                    self.reasonable_move_mask(self.embedded.get_head_as_native_position(&sid));
-                (sid, choose_from_legal_mask(mask, rng))
-            })
+        self.all_heads_with_ids().map(move |(sid, head)| {
+            let mask = self.reasonable_move_mask(head);
+            (sid, choose_from_legal_mask(mask, rng))
+        })
     }
 }
 
@@ -303,15 +456,8 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> Rea
     type SnakeMoves = ArrayVec<(SnakeId, MoveArray), MAX_SNAKES>;
 
     fn reasonable_moves_for_each_snake(&self) -> Self::SnakeMoves {
-        self.embedded
-            .iter_healths()
-            .enumerate()
-            .filter(|(_, health)| **health > 0)
-            .map(move |(idx, _)| {
-                let sid = SnakeId(idx as u8);
-                let head = self.embedded.get_head_as_native_position(&sid);
-                (sid, moves_from_mask(self.reasonable_move_mask(head)))
-            })
+        self.all_heads_with_ids()
+            .map(move |(sid, head)| (sid, moves_from_mask(self.reasonable_move_mask(head))))
             .collect()
     }
 }
@@ -533,6 +679,256 @@ mod test {
                     usize::from(board.free_neighbor_count(pos)),
                     board.free_neighbors(pos).count(),
                     "cell {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_heads_agrees_with_the_per_snake_reads() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+
+            let living: Vec<SnakeId> = board
+                .all_heads_with_ids()
+                .map(|(id, _)| id)
+                .filter(|id| board.get_health_i64(id) > 0)
+                .collect();
+            assert!(!living.is_empty(), "{fixture} should have live snakes");
+
+            let per_snake: Vec<CellIndex<u8>> = (0..4)
+                .map(SnakeId)
+                .filter(|id| board.get_health_i64(id) > 0)
+                .map(|id| board.get_head_as_native_position(&id))
+                .collect();
+            assert_eq!(board.all_heads().collect::<Vec<_>>(), per_snake);
+            assert_eq!(
+                board
+                    .all_heads_with_ids()
+                    .map(|(_, head)| head)
+                    .collect::<Vec<_>>(),
+                per_snake
+            );
+            // ids ascend and agree with the head looked up for that id
+            assert!(living.windows(2).all(|w| w[0].0 < w[1].0));
+            for (id, head) in board.all_heads_with_ids() {
+                assert_eq!(head, board.get_head_as_native_position(&id));
+            }
+            assert_eq!(living.len(), board.all_heads().count());
+        }
+    }
+
+    #[test]
+    fn adjacency_and_radius_match_geometry_across_dimensions() {
+        // Include one-column boards, row seams, rectangular boards, and u16 indices.
+        for (width, height) in [(1, 7), (7, 1), (2, 3), (7, 7), (11, 11), (19, 21), (25, 25)] {
+            let mut game: DEGame =
+                serde_json::from_str(include_str!("../../../fixtures/start_of_game.json")).unwrap();
+            game.board.width = width;
+            game.board.height = height;
+            game.board.snakes.clear();
+            game.board.food.clear();
+            game.board.hazards.clear();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard<u16, Custom, 625, 4> = game.as_cell_board(&ids).unwrap();
+            for a in 0..(width * height) as usize {
+                for b in 0..(width * height) as usize {
+                    let width = width as usize;
+                    let distance =
+                        (a / width).abs_diff(b / width) + (a % width).abs_diff(b % width);
+                    let (a, b) = (CellIndex::from_usize(a), CellIndex::from_usize(b));
+                    assert_eq!(
+                        board.cells_are_adjacent(a, b),
+                        distance == 1,
+                        "{width}x{height}: {a:?} {b:?}"
+                    );
+                    for radius in [0, 1, 2, 3] {
+                        assert_eq!(
+                            board.cells_are_within(a, b, radius),
+                            distance <= radius,
+                            "{width}x{height}, radius {radius}: {a:?} {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cell_distance_matches_positions_on_every_pair() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let cells = (game.board.width * game.board.height) as usize;
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            let width = game.board.width as usize;
+            let manhattan = |a: usize, b: usize| {
+                let (a_x, a_y) = (a % width, a / width);
+                let (b_x, b_y) = (b % width, b / width);
+                a_x.abs_diff(b_x) + a_y.abs_diff(b_y)
+            };
+            for a in 0..cells {
+                for b in 0..cells {
+                    let (a, b) = (CellIndex::from_usize(a), CellIndex::from_usize(b));
+                    let expected = manhattan(a.as_usize(), b.as_usize());
+                    assert_eq!(board.cell_distance(a, b), expected, "{a:?} {b:?}");
+                    assert_eq!(
+                        board.cells_are_adjacent(a, b),
+                        expected == 1,
+                        "adjacent {a:?} {b:?}"
+                    );
+                    assert_eq!(
+                        board.cells_are_within(a, b, 2),
+                        expected <= 2,
+                        "{a:?} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn other_head_within_finds_every_contesting_head() {
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+            include_str!("../../../fixtures/4_snake_game.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            for me in board.all_heads_with_ids().map(|(id, _)| id) {
+                // Query every cell, including other heads (distance zero) and row seams.
+                for cell in 0..(game.board.width * game.board.height) as usize {
+                    let head = CellIndex::from_usize(cell);
+                    for radius in [0, 1, 2, 3] {
+                        let expected = board.all_heads_with_ids().any(|(id, other)| {
+                            id != me && board.cell_distance(head, other) <= radius
+                        });
+                        assert_eq!(
+                            board.other_head_within(me, head, radius),
+                            expected,
+                            "{me:?} at {head:?} within {radius}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn contest_radius_equals_sharing_a_cell_next_turn() {
+        // Brute force the meaning of CONTEST_RADIUS: two heads contest when one orthogonal step
+        // from each of them lands on the same cell. Positions, not the index helpers, so this
+        // does not just restate the implementation.
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let width = game.board.width as i32;
+            let height = game.board.height as i32;
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            // A head can contest its own cell (the opponent moving onto it) as well as any cell
+            // one step away, so the cells a snake can claim include where it stands.
+            let claims = |pos: Position| {
+                std::iter::once(pos)
+                    .chain(Move::all_iter().map(|mv| pos.add_vec(mv.to_vector())))
+                    .filter(|next| next.x >= 0 && next.x < width && next.y >= 0 && next.y < height)
+                    .collect::<Vec<_>>()
+            };
+            let cells = (game.board.width * game.board.height) as usize;
+            for a in 0..cells {
+                let a_position = Position {
+                    x: a as i32 % width,
+                    y: a as i32 / width,
+                };
+                let a_claims = claims(a_position);
+                for b in 0..cells {
+                    if a == b {
+                        continue;
+                    }
+                    let b_position = Position {
+                        x: b as i32 % width,
+                        y: b as i32 / width,
+                    };
+                    let shared = claims(b_position)
+                        .iter()
+                        .any(|cell| a_claims.contains(cell));
+                    assert_eq!(
+                        board.cells_are_within(
+                            CellIndex::from_usize(a),
+                            CellIndex::from_usize(b),
+                            CONTEST_RADIUS
+                        ),
+                        shared,
+                        "{a_position:?} and {b_position:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tactical_conflict_matches_a_destination_collision_reference() {
+        // Reference built from Positions and move vectors, so it shares no arithmetic with the
+        // index-based implementation it checks.
+        for fixture in [
+            include_str!("../../../fixtures/start_of_game.json"),
+            include_str!("../../../fixtures/late_stage.json"),
+            include_str!("../../../fixtures/tail_chase.json"),
+            include_str!("../../../fixtures/cornered.json"),
+        ] {
+            let game: DEGame = serde_json::from_str(fixture).unwrap();
+            let ids = build_snake_id_map(&game);
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            let reference = |you: SnakeId| {
+                let our_moves = board.reasonable_move_masks();
+                let (id, mask) = our_moves
+                    .iter()
+                    .find(|(id, _)| *id == you)
+                    .expect("a living snake has a mask");
+                if mask.count_ones() < 2 {
+                    return true;
+                }
+                let ours: Vec<Position> = moves_from_mask(*mask)
+                    .iter()
+                    .map(|mv| board.get_head_as_position(id).add_vec(mv.to_vector()))
+                    .collect();
+                board.all_heads_with_ids().any(|(other, their_head)| {
+                    if other == you {
+                        return false;
+                    }
+                    let their_position = board.get_head_as_position(&other);
+                    let distance = (board.get_head_as_position(id).x - their_position.x).abs()
+                        + (board.get_head_as_position(id).y - their_position.y).abs();
+                    if distance > CONTEST_RADIUS as i32 {
+                        return false;
+                    }
+                    let their_mask = board.reasonable_move_mask(their_head);
+                    moves_from_mask(their_mask).iter().any(|mv| {
+                        let theirs = their_position.add_vec(mv.to_vector());
+                        ours.contains(&theirs)
+                    })
+                })
+            };
+            for (id, _) in board.all_heads_with_ids() {
+                assert_eq!(
+                    board.has_unresolved_tactical_conflict(id),
+                    reference(id),
+                    "{fixture} {id:?}"
                 );
             }
         }

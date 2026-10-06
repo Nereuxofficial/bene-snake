@@ -41,6 +41,11 @@ impl Default for GameConfig {
 }
 
 impl GameConfig {
+    pub fn with_max_turns(mut self, max_turns: u32) -> Self {
+        self.max_turns = max_turns;
+        self
+    }
+
     pub fn standard_4_snake() -> Self {
         Self::default()
     }
@@ -153,13 +158,34 @@ fn generate_random_game_with_rng(config: &GameConfig, rng: &mut impl Rng) -> Gam
 pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
     let mut rng = rand::rng();
     let game = generate_random_game_with_rng(config, &mut rng);
-    run_game_from_start(agents, config, game, &mut rng)
+    run_game_from_start(agents, config, game, &mut rng, None)
 }
 
 pub fn run_game_seeded(agents: &[&dyn Agent], config: &GameConfig, seed: u64) -> GameResult {
     let mut rng = SmallRng::seed_from_u64(seed);
     let game = generate_random_game_with_rng(config, &mut rng);
-    run_game_from_start(agents, config, game, &mut rng)
+    run_game_from_start(agents, config, game, &mut rng, None)
+}
+
+type FrameObserver<'a> = &'a mut dyn FnMut(u32, &CellBoard4Snakes11x11);
+
+/// Run a game, observing turn zero and every resulting board, including the
+/// terminal board. The observer never participates in move selection or RNG.
+pub fn run_game_observed(
+    agents: &[&dyn Agent],
+    config: &GameConfig,
+    seed: Option<u64>,
+    mut observer: impl FnMut(u32, &CellBoard4Snakes11x11),
+) -> GameResult {
+    if let Some(seed) = seed {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let game = generate_random_game_with_rng(config, &mut rng);
+        run_game_from_start(agents, config, game, &mut rng, Some(&mut observer))
+    } else {
+        let mut rng = rand::rng();
+        let game = generate_random_game_with_rng(config, &mut rng);
+        run_game_from_start(agents, config, game, &mut rng, Some(&mut observer))
+    }
 }
 
 fn run_game_from_start(
@@ -167,6 +193,7 @@ fn run_game_from_start(
     config: &GameConfig,
     game: Game,
     rng: &mut impl Rng,
+    mut observer: Option<FrameObserver<'_>>,
 ) -> GameResult {
     assert!(
         agents.len() >= config.num_snakes,
@@ -181,6 +208,9 @@ fn run_game_from_start(
         .expect("Failed to create cell board");
 
     let mut turn = 0;
+    if let Some(observer) = observer.as_mut() {
+        observer(turn, &board);
+    }
 
     // Game loop
     // The compact board's `is_over` is perspective-relative: it also returns true
@@ -221,6 +251,9 @@ fn run_game_from_start(
         }
 
         turn += 1;
+        if let Some(observer) = observer.as_mut() {
+            observer(turn, &board);
+        }
     }
 
     // Determine winner
@@ -324,7 +357,7 @@ mod tests {
             saw_replacement: AtomicBool::new(false),
         };
         let mut rng = SmallRng::seed_from_u64(20260926);
-        run_game_from_start(&[&eater, &MoveLeft], &config, game, &mut rng);
+        run_game_from_start(&[&eater, &MoveLeft], &config, game, &mut rng, None);
         assert!(eater.calls.load(Ordering::Relaxed) >= 2);
         assert!(eater.saw_replacement.load(Ordering::Relaxed));
     }
@@ -380,6 +413,7 @@ mod tests {
             &config,
             game,
             &mut rng,
+            None,
         );
 
         assert_eq!(result.turns, 3);
@@ -411,6 +445,7 @@ mod tests {
             &config,
             game,
             &mut rng,
+            None,
         );
 
         assert_eq!(result.winner, Some(1));
@@ -452,7 +487,7 @@ mod tests {
         agents.extend(survivors.iter().map(|agent| agent as &dyn Agent));
         let mut rng = SmallRng::seed_from_u64(7);
 
-        let result = run_game_from_start(&agents, &config, game, &mut rng);
+        let result = run_game_from_start(&agents, &config, game, &mut rng, None);
 
         assert_eq!(result.turns, 3);
         assert_eq!(result.winner, None);

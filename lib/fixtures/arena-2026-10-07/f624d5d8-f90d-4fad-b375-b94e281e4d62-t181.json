@@ -1,0 +1,342 @@
+{
+  "game": {
+    "id": "f624d5d8-f90d-4fad-b375-b94e281e4d62",
+    "ruleset": {
+      "name": "standard",
+      "version": "v1.0.0",
+      "settings": {
+        "foodSpawnChance": 15,
+        "minimumFood": 1,
+        "hazardDamagePerTurn": 15,
+        "hazardMap": "",
+        "hazardMapAuthor": "",
+        "royale": {
+          "shrinkEveryNTurns": 0
+        },
+        "squad": {
+          "allowBodyCollisions": false,
+          "sharedElimination": false,
+          "sharedHealth": false,
+          "sharedLength": false
+        }
+      }
+    },
+    "timeout": 500,
+    "map": "standard",
+    "source": "arena"
+  },
+  "turn": 181,
+  "board": {
+    "height": 11,
+    "width": 11,
+    "food": [
+      {
+        "x": 9,
+        "y": 0
+      },
+      {
+        "x": 5,
+        "y": 3
+      }
+    ],
+    "snakes": [
+      {
+        "id": "1a662bc1-5b82-420f-b0be-c9a7b0b2cf5c",
+        "name": "aegis",
+        "health": 95,
+        "body": [
+          {
+            "x": 5,
+            "y": 4
+          },
+          {
+            "x": 6,
+            "y": 4
+          },
+          {
+            "x": 7,
+            "y": 4
+          },
+          {
+            "x": 7,
+            "y": 3
+          },
+          {
+            "x": 8,
+            "y": 3
+          },
+          {
+            "x": 8,
+            "y": 2
+          },
+          {
+            "x": 7,
+            "y": 2
+          },
+          {
+            "x": 6,
+            "y": 2
+          },
+          {
+            "x": 6,
+            "y": 1
+          },
+          {
+            "x": 5,
+            "y": 1
+          },
+          {
+            "x": 5,
+            "y": 2
+          },
+          {
+            "x": 4,
+            "y": 2
+          },
+          {
+            "x": 4,
+            "y": 1
+          },
+          {
+            "x": 3,
+            "y": 1
+          }
+        ],
+        "head": {
+          "x": 5,
+          "y": 4
+        },
+        "length": 14,
+        "latency": "73",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#f0c674",
+          "head": "default",
+          "tail": "default"
+        }
+      },
+      {
+        "id": "100fc9a5-9c08-44ba-ab8c-39512318e2ce",
+        "name": "NMC\u00b2",
+        "health": 94,
+        "body": [
+          {
+            "x": 2,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 2
+          },
+          {
+            "x": 1,
+            "y": 3
+          },
+          {
+            "x": 1,
+            "y": 4
+          },
+          {
+            "x": 1,
+            "y": 5
+          },
+          {
+            "x": 0,
+            "y": 5
+          },
+          {
+            "x": 0,
+            "y": 6
+          },
+          {
+            "x": 0,
+            "y": 7
+          },
+          {
+            "x": 1,
+            "y": 7
+          },
+          {
+            "x": 2,
+            "y": 7
+          },
+          {
+            "x": 2,
+            "y": 8
+          },
+          {
+            "x": 2,
+            "y": 9
+          },
+          {
+            "x": 1,
+            "y": 9
+          }
+        ],
+        "head": {
+          "x": 2,
+          "y": 1
+        },
+        "length": 14,
+        "latency": "314",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#0066cc",
+          "head": "gamer",
+          "tail": "mlh-gene"
+        }
+      },
+      {
+        "id": "91e5b9e9-dbae-4942-b09d-b1b03683cbdd",
+        "name": "bene-snake",
+        "health": 89,
+        "body": [
+          {
+            "x": 4,
+            "y": 5
+          },
+          {
+            "x": 3,
+            "y": 5
+          },
+          {
+            "x": 3,
+            "y": 4
+          },
+          {
+            "x": 3,
+            "y": 3
+          },
+          {
+            "x": 2,
+            "y": 3
+          },
+          {
+            "x": 2,
+            "y": 4
+          },
+          {
+            "x": 2,
+            "y": 5
+          },
+          {
+            "x": 2,
+            "y": 6
+          },
+          {
+            "x": 3,
+            "y": 6
+          },
+          {
+            "x": 4,
+            "y": 6
+          },
+          {
+            "x": 4,
+            "y": 7
+          },
+          {
+            "x": 5,
+            "y": 7
+          },
+          {
+            "x": 5,
+            "y": 6
+          }
+        ],
+        "head": {
+          "x": 4,
+          "y": 5
+        },
+        "length": 13,
+        "latency": "459",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#ff5e5b",
+          "head": "ferret",
+          "tail": "curled"
+        }
+      }
+    ],
+    "hazards": []
+  },
+  "you": {
+    "id": "91e5b9e9-dbae-4942-b09d-b1b03683cbdd",
+    "name": "bene-snake",
+    "health": 89,
+    "body": [
+      {
+        "x": 4,
+        "y": 5
+      },
+      {
+        "x": 3,
+        "y": 5
+      },
+      {
+        "x": 3,
+        "y": 4
+      },
+      {
+        "x": 3,
+        "y": 3
+      },
+      {
+        "x": 2,
+        "y": 3
+      },
+      {
+        "x": 2,
+        "y": 4
+      },
+      {
+        "x": 2,
+        "y": 5
+      },
+      {
+        "x": 2,
+        "y": 6
+      },
+      {
+        "x": 3,
+        "y": 6
+      },
+      {
+        "x": 4,
+        "y": 6
+      },
+      {
+        "x": 4,
+        "y": 7
+      },
+      {
+        "x": 5,
+        "y": 7
+      },
+      {
+        "x": 5,
+        "y": 6
+      }
+    ],
+    "head": {
+      "x": 4,
+      "y": 5
+    },
+    "length": 13,
+    "latency": "459",
+    "shout": "",
+    "squad": "",
+    "customizations": {
+      "color": "#ff5e5b",
+      "head": "ferret",
+      "tail": "curled"
+    }
+  }
+}

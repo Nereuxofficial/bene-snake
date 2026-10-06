@@ -31,3 +31,7 @@ harness = false
 [[bench]]
 name = "pea_eater"
 harness = false
+
+[[bench]]
+name = "heads"
+harness = false

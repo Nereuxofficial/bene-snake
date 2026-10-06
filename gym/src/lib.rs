@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod runner;
 pub mod stats;
+pub mod viewer;
 
 pub use agents::{HeuristicAgent, HeuristicPolicy, MinimaxAgent, MinimaxPolicy, RandomAgent};
 pub use lib::{Agent, MctsAgent};

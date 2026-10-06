@@ -1,0 +1,338 @@
+{
+  "game": {
+    "id": "118fe3bd-01da-4ede-951c-4fce02a2264f",
+    "ruleset": {
+      "name": "standard",
+      "version": "v1.0.0",
+      "settings": {
+        "foodSpawnChance": 15,
+        "minimumFood": 1,
+        "hazardDamagePerTurn": 15,
+        "hazardMap": "",
+        "hazardMapAuthor": "",
+        "royale": {
+          "shrinkEveryNTurns": 0
+        },
+        "squad": {
+          "allowBodyCollisions": false,
+          "sharedElimination": false,
+          "sharedHealth": false,
+          "sharedLength": false
+        }
+      }
+    },
+    "timeout": 500,
+    "map": "standard",
+    "source": "arena"
+  },
+  "turn": 158,
+  "board": {
+    "height": 11,
+    "width": 11,
+    "food": [
+      {
+        "x": 5,
+        "y": 0
+      }
+    ],
+    "snakes": [
+      {
+        "id": "5d01f623-0332-411c-8079-fed01892bd4e",
+        "name": "\ud83d\udc41\ufe0f Kwisatz Haderach",
+        "health": 92,
+        "body": [
+          {
+            "x": 0,
+            "y": 4
+          },
+          {
+            "x": 1,
+            "y": 4
+          },
+          {
+            "x": 1,
+            "y": 5
+          },
+          {
+            "x": 1,
+            "y": 6
+          },
+          {
+            "x": 1,
+            "y": 7
+          },
+          {
+            "x": 0,
+            "y": 7
+          },
+          {
+            "x": 0,
+            "y": 8
+          },
+          {
+            "x": 0,
+            "y": 9
+          }
+        ],
+        "head": {
+          "x": 0,
+          "y": 4
+        },
+        "length": 8,
+        "latency": "467",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#0f9fd4",
+          "head": "all-seeing",
+          "tail": "wave"
+        }
+      },
+      {
+        "id": "9c273b89-dcf4-428c-99c5-e7d64e6ef42f",
+        "name": "@~~~~@",
+        "health": 92,
+        "body": [
+          {
+            "x": 3,
+            "y": 3
+          },
+          {
+            "x": 4,
+            "y": 3
+          },
+          {
+            "x": 5,
+            "y": 3
+          },
+          {
+            "x": 5,
+            "y": 2
+          },
+          {
+            "x": 5,
+            "y": 1
+          },
+          {
+            "x": 6,
+            "y": 1
+          },
+          {
+            "x": 7,
+            "y": 1
+          },
+          {
+            "x": 7,
+            "y": 0
+          },
+          {
+            "x": 8,
+            "y": 0
+          },
+          {
+            "x": 8,
+            "y": 1
+          },
+          {
+            "x": 8,
+            "y": 2
+          },
+          {
+            "x": 8,
+            "y": 3
+          },
+          {
+            "x": 7,
+            "y": 3
+          },
+          {
+            "x": 7,
+            "y": 2
+          },
+          {
+            "x": 6,
+            "y": 2
+          },
+          {
+            "x": 6,
+            "y": 3
+          }
+        ],
+        "head": {
+          "x": 3,
+          "y": 3
+        },
+        "length": 16,
+        "latency": "500",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#acd2c5",
+          "head": "cat",
+          "tail": "cat"
+        }
+      },
+      {
+        "id": "409adcb6-22f9-4200-9627-e58a596cf87e",
+        "name": "bene-snake",
+        "health": 92,
+        "body": [
+          {
+            "x": 2,
+            "y": 4
+          },
+          {
+            "x": 2,
+            "y": 5
+          },
+          {
+            "x": 2,
+            "y": 6
+          },
+          {
+            "x": 2,
+            "y": 7
+          },
+          {
+            "x": 2,
+            "y": 8
+          },
+          {
+            "x": 2,
+            "y": 9
+          },
+          {
+            "x": 3,
+            "y": 9
+          },
+          {
+            "x": 4,
+            "y": 9
+          },
+          {
+            "x": 5,
+            "y": 9
+          },
+          {
+            "x": 5,
+            "y": 8
+          },
+          {
+            "x": 4,
+            "y": 8
+          },
+          {
+            "x": 3,
+            "y": 8
+          },
+          {
+            "x": 3,
+            "y": 7
+          },
+          {
+            "x": 3,
+            "y": 6
+          },
+          {
+            "x": 3,
+            "y": 5
+          }
+        ],
+        "head": {
+          "x": 2,
+          "y": 4
+        },
+        "length": 15,
+        "latency": "458",
+        "shout": "",
+        "squad": "",
+        "customizations": {
+          "color": "#ff5e5b",
+          "head": "ferret",
+          "tail": "curled"
+        }
+      }
+    ],
+    "hazards": []
+  },
+  "you": {
+    "id": "409adcb6-22f9-4200-9627-e58a596cf87e",
+    "name": "bene-snake",
+    "health": 92,
+    "body": [
+      {
+        "x": 2,
+        "y": 4
+      },
+      {
+        "x": 2,
+        "y": 5
+      },
+      {
+        "x": 2,
+        "y": 6
+      },
+      {
+        "x": 2,
+        "y": 7
+      },
+      {
+        "x": 2,
+        "y": 8
+      },
+      {
+        "x": 2,
+        "y": 9
+      },
+      {
+        "x": 3,
+        "y": 9
+      },
+      {
+        "x": 4,
+        "y": 9
+      },
+      {
+        "x": 5,
+        "y": 9
+      },
+      {
+        "x": 5,
+        "y": 8
+      },
+      {
+        "x": 4,
+        "y": 8
+      },
+      {
+        "x": 3,
+        "y": 8
+      },
+      {
+        "x": 3,
+        "y": 7
+      },
+      {
+        "x": 3,
+        "y": 6
+      },
+      {
+        "x": 3,
+        "y": 5
+      }
+    ],
+    "head": {
+      "x": 2,
+      "y": 4
+    },
+    "length": 15,
+    "latency": "458",
+    "shout": "",
+    "squad": "",
+    "customizations": {
+      "color": "#ff5e5b",
+      "head": "ferret",
+      "tail": "curled"
+    }
+  }
+}

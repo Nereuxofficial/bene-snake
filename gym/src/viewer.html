@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snake Gym · Game viewer</title>
+<style>
+:root{color-scheme:dark;--bg:#101615;--panel:#17201e;--border:#2c3935;--muted:#9badA5;--text:#e5eee9;--accent:#b4ec80}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}button,input,select{font:inherit}button,a,select,input{touch-action:manipulation}button{cursor:pointer;color:inherit;background:#24302c;border:1px solid var(--border);border-radius:8px;padding:9px 13px}button:hover{border-color:var(--accent)}button:disabled{opacity:.4;cursor:default}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}a{color:var(--accent)}header{height:78px;border-bottom:1px solid var(--border);padding:0 32px;display:flex;align-items:center;justify-content:space-between}.brand{display:flex;gap:12px;align-items:center}.mark{color:var(--accent);font-size:29px}.brand strong{font-size:20px;letter-spacing:-.6px}.brand small{display:block;color:var(--muted);font-size:12px;margin-top:2px}.connection{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}main{display:grid;grid-template-columns:310px minmax(0,1fr);min-height:calc(100vh - 78px)}aside{border-right:1px solid var(--border);padding:25px 18px;max-height:calc(100vh - 78px);overflow:auto}.eyebrow{text-transform:uppercase;letter-spacing:1.8px;font-size:11px;color:var(--muted)}aside h2{font-size:20px;margin:6px 0 18px}#search{width:100%;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:11px;color:inherit}.filters{display:flex;gap:6px;margin:12px 0 20px}.filters button{flex:1;font-size:12px}.filters .active{background:var(--accent);color:#182319;border-color:var(--accent)}#games{display:grid;gap:9px}.game{display:block;text-decoration:none;border:1px solid var(--border);border-radius:10px;padding:13px;color:inherit;background:var(--panel)}.game:hover,.game.selected{border-color:var(--accent)}.game.selected{background:#24322a}.game-top{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-bottom:7px}.game strong{display:block;font-size:13px;line-height:1.5}.game .outcome{font-size:12px;color:var(--muted);margin-top:8px}.live-tag{color:var(--accent)}.empty{color:var(--muted);font-size:13px;line-height:1.8;padding:16px 0}.workspace{max-width:1180px;width:100%;margin:auto;padding:32px 40px}.title-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}h1{font-size:26px;letter-spacing:-.7px;margin:7px 0}.metadata{color:var(--muted);font-size:12px;line-height:1.8}#follow.active{color:#182319;background:var(--accent);border-color:var(--accent)}.arena{display:grid;grid-template-columns:minmax(260px,620px) minmax(165px,240px);gap:24px;align-items:start}.board-wrap{padding:14px;background:var(--panel);border:1px solid var(--border);border-radius:14px}#board{display:block;width:100%;aspect-ratio:1;background:#111a17;border-radius:7px}#snakes{display:grid;gap:12px}.snake-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:15px}.snake-name{display:flex;gap:8px;align-items:center;font-size:14px;font-weight:600}.swatch{width:10px;height:10px;border-radius:3px;flex-shrink:0}.snake-stats{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:13px}.health{height:4px;background:#2d3935;border-radius:2px;margin-top:8px;overflow:hidden}.health span{display:block;height:100%}.eliminated{opacity:.5}.turn-display{display:flex;justify-content:space-between;margin:20px 0 9px;color:var(--muted);font-size:12px}#timeline{width:100%;accent-color:var(--accent);cursor:pointer;margin:4px 0 15px}.controls{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.transport{display:flex;gap:7px}.transport #play{min-width:83px}select{background:var(--panel);color:inherit;border:1px solid var(--border);border-radius:8px;padding:8px}footer{display:flex;justify-content:space-between;gap:16px;margin-top:22px;font-size:11px;color:var(--muted);line-height:1.7}#download{font-size:12px}#message{color:#f2c17d;font-size:13px;min-height:22px;margin-top:12px}#welcome{padding:80px 10px;text-align:center}#welcome h1{font-size:32px}#welcome p{color:var(--muted);max-width:390px;line-height:1.8;margin:18px auto}code{background:var(--panel);padding:3px 7px;border-radius:5px;font-size:12px}[hidden]{display:none!important}@media(max-width:1050px){.workspace{padding:25px}.arena{grid-template-columns:1fr}#snakes{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){header{padding:0 18px;height:68px}main{display:block}aside{border-right:0;border-bottom:1px solid var(--border);max-height:260px;padding:18px}aside h2{margin-bottom:10px}#games{grid-template-columns:repeat(2,minmax(0,1fr))}.filters{margin:8px 0 12px}.workspace{padding:22px 18px}.title-row{align-items:start}h1{font-size:22px}footer{flex-direction:column}}
+</style>
+</head>
+<body>
+<header><div class="brand"><span class="mark" aria-hidden="true">▦</span><div><strong>Snake Gym</strong><small>Watch. Replay. Inspect.</small></div></div><div class="connection" role="status"><span class="dot" id="dot"></span><span id="connection">Connecting…</span></div></header>
+<main>
+<aside><div class="eyebrow">The arena</div><h2>Games <span id="count" class="metadata">0</span></h2><input id="search" type="search" placeholder="Search agents or seed…" aria-label="Search games"><div class="filters" aria-label="Filter games"><button data-filter="all" class="active" aria-pressed="true">All games</button><button data-filter="running" aria-pressed="false">Live</button><button data-filter="complete" aria-pressed="false">Finished</button></div><nav id="games" aria-label="Game history"></nav></aside>
+<div class="workspace">
+<div id="welcome"><div class="eyebrow">Your local arena</div><h1>Ready when the snakes are.</h1><p>Running games appear here automatically. Select a game to watch it live or replay every turn.</p><code>just gym --web duel --games 20</code></div>
+<section id="viewer" hidden aria-label="Game replay">
+<div class="title-row"><div><div class="eyebrow" id="game-label">Game replay</div><h1 id="title"></h1><div class="metadata" id="metadata"></div></div><button id="follow" title="Follow the latest turn and the next running game" aria-pressed="false">● Follow live</button></div>
+<div class="arena"><div><div class="board-wrap"><svg id="board" role="img" aria-label="Battlesnake board"></svg></div><div class="turn-display"><span id="turn-text">Turn 0</span><span id="result"></span></div><input id="timeline" type="range" min="0" max="0" value="0" aria-label="Game turn"><div class="controls"><div class="transport"><button id="first" aria-label="First turn" title="First turn">⏮</button><button id="previous" aria-label="Previous turn" title="Previous turn (Left arrow)">‹</button><button id="play" title="Play or pause (Space)">▶ Play</button><button id="next" aria-label="Next turn" title="Next turn (Right arrow)">›</button><button id="last" aria-label="Last turn" title="Last turn">⏭</button></div><select id="speed" aria-label="Playback speed"><option value="500">2 turns / sec</option><option value="200" selected>5 turns / sec</option><option value="100">10 turns / sec</option><option value="50">20 turns / sec</option></select></div></div><div id="snakes"></div></div>
+<footer><span>← → Step through turns · Space to play / pause<br>Coordinates start at the bottom left.</span><a id="download" href="#">Download replay ↓</a></footer>
+</section><div id="message" role="status"></div>
+</div>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), colors=['#b4ec80','#8ebdff','#f6b675','#d9a4f2'];
+let generation=0, games=[], selected=null, replay=null, turn=0, following=false, playing=false, filter='all', listSignature='', loading=false, lastTick=0;
+const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const outcome=g=>g.status==='running'?'In progress':g.result?.winner!=null?`${g.agents[g.result.winner]} won`:g.turns>=g.max_turns?'Draw · turn limit':'Draw';
+function renderList(force=false){
+ const query=$('search').value.toLowerCase();
+ const shown=games.filter(g=>(filter==='all'||g.status===filter)&&`${g.agents.join(' ')} ${g.seed??''} ${g.id}`.toLowerCase().includes(query));
+ const signature=JSON.stringify([shown,selected]);if(!force&&signature===listSignature)return;listSignature=signature;
+ $('count').textContent=games.length;
+ $('games').innerHTML=shown.length?shown.map(g=>`<a class="game ${g.id===selected?'selected':''}" href="#${encodeURIComponent(g.id)}" ${g.id===selected?'aria-current="true"':''}><div class="game-top"><span>${esc(new Date(g.started_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))} · ${esc(new Date(g.started_at).toLocaleDateString())}</span><span class="${g.status==='running'?'live-tag':''}">${g.status==='running'?'● LIVE':`${g.turns} turns`}</span></div><strong>${g.agents.map(esc).join(' <span class="metadata">vs</span> ')}</strong><div class="outcome">${esc(outcome(g))}${g.seed!=null?` · seed ${esc(g.seed)}`:''}</div></a>`).join(''):'<div class="empty">No games here yet.<br>Games recorded with <code>--web</code> will appear here.</div>';
+}
+async function getJSON(url){const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw new Error(`Request failed (${response.status})`);return response.json();}
+async function selectGame(id){
+ if(id===selected)return;
+ generation++;selected=id;replay=null;turn=0;playing=false;following=games.find(g=>g.id===id)?.status==='running';
+ $('message').textContent='';renderList(true);render();
+ await updateFrames(id);
+}
+async function updateFrames(id){
+ const from=replay?.frames.length??0, version=generation;
+ try{
+  const response=await getJSON(`/api/games/${encodeURIComponent(id)}?from=${from}`);
+  if(id!==selected||version!==generation)return;
+  if(!replay)replay={summary:response.summary,frames:[]};
+  replay.summary=response.summary;
+  // A response is a suffix; never replace turns already available locally.
+  replay.frames.splice(response.from,replay.frames.length-response.from,...response.frames);
+  if(following)turn=Math.max(0,replay.frames.length-1);
+  render();
+ }catch(error){if(id===selected&&version===generation)$('message').textContent=`Could not load this game: ${error.message}`;}
+}
+async function refresh(){
+ if(loading)return;loading=true;
+ try{
+  games=await getJSON('/api/games');$('connection').textContent='Viewer connected';$('dot').style.background='var(--accent)';$('message').textContent='';
+  const hash=decodeURIComponent(location.hash.slice(1));
+  if(!selected&&games.length){const initial=games.find(g=>g.id===hash)||games.find(g=>g.status==='running')||games[0];history.replaceState(null,'',`#${encodeURIComponent(initial.id)}`);await selectGame(initial.id);}
+  else if(selected){
+   const active=games.find(g=>g.status==='running');
+   if(following&&active&&active.id!==selected&&replay?.summary.status==='complete'){
+    history.replaceState(null,'',`#${encodeURIComponent(active.id)}`);await selectGame(active.id);
+   }else if(!replay||replay.summary.status==='running')await updateFrames(selected);
+  }
+  renderList();
+ }catch(error){$('connection').textContent='Disconnected · retrying';$('dot').style.background='#f2c17d';$('message').textContent='The gym server is unavailable. Keep it running to view games.';}
+ finally{loading=false;}
+}
+function drawBoard(frame,g){
+ const svg=$('board');svg.setAttribute('viewBox',`-.6 -.6 ${g.width+1.2} ${g.height+1.2}`);svg.setAttribute('aria-label',`Game board at turn ${frame.turn}`);
+ const y=p=>g.height-1-p.y;
+ let content=`<title>Turn ${frame.turn} · ${g.width} by ${g.height} board</title>`;
+ for(let x=0;x<g.width;x++)for(let row=0;row<g.height;row++)content+=`<rect x="${x-.48}" y="${row-.48}" width=".96" height=".96" rx=".06" fill="${(x+row)%2?'#1e2c25':'#1b2722'}"/>`;
+ for(const p of frame.food)content+=`<circle cx="${p.x}" cy="${y(p)}" r=".22" fill="#f57575"><title>Food (${p.x}, ${p.y})</title></circle><path d="M ${p.x} ${y(p)-.22} q .04 -.16 .17 -.15" fill="none" stroke="#b4ec80" stroke-width=".08"/>`;
+ for(const snake of frame.snakes){
+  const color=colors[snake.seat%colors.length], points=snake.body.map(p=>`${p.x},${y(p)}`).join(' '), head=snake.head;
+  content+=`<g><title>${esc(g.agents[snake.seat])} · health ${snake.health} · length ${snake.length}</title><polyline points="${points}" fill="none" stroke="${color}" stroke-width=".68" stroke-linecap="round" stroke-linejoin="round"/>`;
+  for(const p of snake.body)content+=`<circle cx="${p.x}" cy="${y(p)}" r=".32" fill="${color}"/>`;
+  const neck=snake.body.find(p=>p.x!==head.x||p.y!==head.y), dx=neck?Math.sign(head.x-neck.x):0, dy=neck?-Math.sign(head.y-neck.y):-1;
+  content+=`<circle cx="${head.x}" cy="${y(head)}" r=".39" fill="${color}"/>`;
+  for(const side of [-1,1])content+=`<circle cx="${head.x+dx*.15-dy*.15*side}" cy="${y(head)+dy*.15+dx*.15*side}" r=".075" fill="#152019"/>`;
+  content+='</g>';
+ }
+ svg.innerHTML=content;
+}
+function render(){
+ $('follow').classList.toggle('active',following);$('follow').setAttribute('aria-pressed',String(following));$('play').textContent=playing?'Ⅱ Pause':'▶ Play';
+ const hasFrames=!!replay?.frames.length;$('welcome').hidden=hasFrames;$('viewer').hidden=!hasFrames;if(!hasFrames)return;
+ const g=replay.summary,frame=replay.frames[turn];
+ $('download').href=`/api/games/${encodeURIComponent(g.id)}/replay`;
+ $('title').textContent=g.agents.join(' vs ');$('game-label').textContent=g.status==='running'?'● Live game':'Completed game';
+ $('metadata').textContent=`${g.width} × ${g.height} · ${new Date(g.started_at).toLocaleString()}${g.seed!=null?` · Seed ${g.seed}`:''}`;
+ $('turn-text').textContent=`Turn ${frame.turn} / ${g.turns}`;$('result').textContent=outcome(g);
+ $('timeline').max=replay.frames.length-1;$('timeline').value=turn;
+ $('first').disabled=$('previous').disabled=turn===0;$('last').disabled=$('next').disabled=turn>=replay.frames.length-1;
+ drawBoard(frame,g);
+ $('snakes').innerHTML=g.agents.map((name,seat)=>{
+  const snake=frame.snakes.find(s=>s.seat===seat),winner=g.result?.winner===seat,color=colors[seat%colors.length];
+  return `<div class="snake-card ${snake?'':'eliminated'}"><div class="snake-name"><span class="swatch" style="background:${color}"></span>${esc(name)}</div><div class="snake-stats"><span>${snake?`Health ${snake.health}`:'Eliminated'}</span><span>${snake?`Length ${snake.length}`:''}</span></div><div class="health"><span style="width:${snake?snake.health:0}%;background:${color}"></span></div>${winner?'<div class="metadata" style="margin-top:10px">Winner</div>':''}<div class="metadata" style="margin-top:7px">Seat ${seat+1}</div></div>`;
+ }).join('');
+}
+function step(to){if(!replay?.frames.length)return;following=false;playing=false;turn=Math.max(0,Math.min(to,replay.frames.length-1));render();}
+$('first').onclick=()=>step(0);$('previous').onclick=()=>step(turn-1);$('next').onclick=()=>step(turn+1);$('last').onclick=()=>step(Infinity);$('timeline').oninput=event=>step(Number(event.target.value));
+function togglePlay(){if(!replay?.frames.length)return;following=false;playing=!playing;if(playing&&turn===replay.frames.length-1)turn=0;lastTick=performance.now();render();}
+$('play').onclick=togglePlay;
+$('follow').onclick=()=>{
+ following=!following;playing=false;
+ if(following){const active=games.find(g=>g.status==='running');if(active&&active.id!==selected){location.hash=encodeURIComponent(active.id);return;}if(replay)turn=Math.max(0,replay.frames.length-1);}
+ render();
+};
+$('search').oninput=()=>renderList(true);
+for(const button of document.querySelectorAll('[data-filter]'))button.onclick=()=>{filter=button.dataset.filter;for(const b of document.querySelectorAll('[data-filter]')){b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',String(b===button));}renderList(true);};
+window.addEventListener('hashchange',()=>{const id=decodeURIComponent(location.hash.slice(1));if(id)void selectGame(id);});
+document.addEventListener('keydown',event=>{if(event.target.matches('input,select,button,a')||!replay)return;if(event.key==='ArrowLeft'){event.preventDefault();step(turn-1);}else if(event.key==='ArrowRight'){event.preventDefault();step(turn+1);}else if(event.code==='Space'){event.preventDefault();togglePlay();}});
+setInterval(()=>{if(!playing||!replay)return;const now=performance.now();if(now-lastTick<Number($('speed').value))return;lastTick=now;if(turn<replay.frames.length-1){turn++;render();}else if(replay.summary.status==='complete'){playing=false;render();}},25);
+void refresh();setInterval(refresh,500);
+</script>
+</body>
+</html>

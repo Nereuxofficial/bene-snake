@@ -20,7 +20,7 @@ use battlesnake_game_types::{
 use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 
-use crate::eval::{evaluate_board, evaluate_board_with_food};
+use crate::eval::evaluate_board;
 use tracing::info;
 
 #[cfg(test)]
@@ -28,7 +28,8 @@ use battlesnake_game_types::{
     compact_representation::standard::moves_from_mask, types::MoveArray, types::ReasonableMovesGame,
 };
 
-const MAX_ROLLOUT_DEPTH: u32 = 24;
+// TODO: Consider low rollout depth but continuation when e.g. heads are close to each other.
+const MAX_ROLLOUT_DEPTH: u32 = 8;
 const MAX_TREE_DEPTH: usize = 64;
 const TREE_PATH_CAPACITY: usize = 128;
 pub const SEARCH_WORKERS: usize = 12;
@@ -412,6 +413,29 @@ fn sample_rollout_moves(
         .collect()
 }
 
+/// How far the search's rollouts progressed relative to their configured base depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RolloutDepthStatus {
+    NotReached,
+    Reached,
+    Extended {
+        /// Number of rollouts that continued beyond the base depth.
+        rollouts: u64,
+        /// Total simulated steps beyond the base depth across those rollouts.
+        extra_steps: u64,
+        /// Most extra steps taken by any single rollout.
+        max_extra_steps: u32,
+    },
+    /// At least one rollout was stopped by the hard cap with a tactical conflict remaining.
+    LimitHit {
+        hits: u64,
+        /// Number of extended rollouts, including those that stopped before the hard cap.
+        rollouts: u64,
+        extra_steps: u64,
+        max_extra_steps: u32,
+    },
+}
+
 #[derive(Default)]
 pub struct SearchDepthStats {
     pub iterations: u64,
@@ -419,6 +443,33 @@ pub struct SearchDepthStats {
     pub tree_depth_limit_hits: u64,
     pub max_rollout_depth: u32,
     pub rollout_depth_limit_hits: u64,
+    pub extended_rollouts: u64,
+    pub rollout_extra_steps: u64,
+    pub rollout_hard_limit_hits: u64,
+}
+
+impl SearchDepthStats {
+    /// Summarize rollouts sharing the given base depth. Extension counts cover all rollouts,
+    /// while `max_extra_steps` describes the longest one.
+    pub fn rollout_depth_status(&self, base_depth: u32) -> RolloutDepthStatus {
+        if self.rollout_hard_limit_hits > 0 {
+            return RolloutDepthStatus::LimitHit {
+                hits: self.rollout_hard_limit_hits,
+                rollouts: self.extended_rollouts,
+                extra_steps: self.rollout_extra_steps,
+                max_extra_steps: self.max_rollout_depth.saturating_sub(base_depth),
+            };
+        }
+        match self.max_rollout_depth.cmp(&base_depth) {
+            std::cmp::Ordering::Less => RolloutDepthStatus::NotReached,
+            std::cmp::Ordering::Equal => RolloutDepthStatus::Reached,
+            std::cmp::Ordering::Greater => RolloutDepthStatus::Extended {
+                rollouts: self.extended_rollouts,
+                extra_steps: self.rollout_extra_steps,
+                max_extra_steps: self.max_rollout_depth - base_depth,
+            },
+        }
+    }
 }
 
 // Separate frequently updated edges to avoid false sharing between workers.
@@ -877,6 +928,47 @@ impl Node {
     pub fn best_move(&self, you: SnakeId) -> Option<Move> {
         self.prepare_escape_guard(you);
         let mask = self.tree_own_mask(you)?;
+        self.choose_from_mask(you, mask)
+    }
+
+    /// Experiment (B2): select using a precomputed, bounded tactical root filter.
+    ///
+    /// `None` reproduces [`Self::best_move`] exactly. The filter is computed once per
+    /// search root by the caller and passed in, so a proof derived for one root never
+    /// becomes a shared-node cached unknown. Only candidates proven exposed at a common
+    /// horizon with a proven-safe sibling are removed; unknown masks and all-exposed
+    /// masks are preserved unchanged. One structured summary is logged per call.
+    pub fn best_move_with_root_filter(
+        &self,
+        you: SnakeId,
+        filter: Option<&crate::tactical::RootFilter>,
+    ) -> Option<Move> {
+        self.prepare_escape_guard(you);
+        let mask = self.tree_own_mask(you)?;
+        let Some(filter) = filter else {
+            return self.choose_from_mask(you, mask);
+        };
+        let unfiltered = self.choose_from_mask(you, mask);
+        // Intersect with the live candidate mask so a stale filter can never add a
+        // move that is not currently selectable.
+        let chosen = self.choose_from_mask(you, mask & filter.mask);
+        crate::tactical::log_root_filter(filter, unfiltered != chosen);
+        chosen
+    }
+
+    /// Compute the bounded tactical root filter for this board (experiment B2).
+    /// Runs once per search root, sourced from this root's own board and candidate mask.
+    pub fn tactical_root_filter(
+        &self,
+        you: SnakeId,
+        limits: &crate::tactical::Limits<'_>,
+    ) -> crate::tactical::RootFilter {
+        self.prepare_escape_guard(you);
+        let base = self.tree_own_mask(you).unwrap_or(0);
+        crate::tactical::root_filter(&self.board, you, base, limits)
+    }
+
+    fn choose_from_mask(&self, you: SnakeId, mask: u8) -> Option<Move> {
         let policy = self.selection_policy(you);
         mask_bits(mask).max_by(|left, right| {
             let stats = |mv: &Move| &self.own_moves[mv.as_index()];
@@ -1005,13 +1097,19 @@ fn rollout_from(
     #[cfg(feature = "tracy")]
     let _tracy_span = tracy_client::span!("rollout_from");
     let mut depth = 0;
+    let hard_limit = options.depth * 4;
     let mut food = if options.food_guidance {
         board.get_all_food_as_positions()
     } else {
         ArrayVec::new()
     };
 
-    while !board.is_over() && board.get_health(you) > 0 && depth < options.depth {
+    while !board.is_over()
+        && board.get_health(you) > 0
+        && (depth < options.depth || board.has_unresolved_tactical_conflict(*you))
+        // Max depth
+        && depth < hard_limit
+    {
         let moves = sample_rollout_moves(&board, &food, rng, options.food_guidance);
         board = {
             #[cfg(feature = "tracy")]
@@ -1027,6 +1125,17 @@ fn rollout_from(
     }
 
     stats.max_rollout_depth = stats.max_rollout_depth.max(depth);
+    if depth > options.depth {
+        stats.extended_rollouts += 1;
+        stats.rollout_extra_steps += u64::from(depth - options.depth);
+    }
+    if depth == hard_limit
+        && !board.is_over()
+        && board.get_health(you) > 0
+        && board.has_unresolved_tactical_conflict(*you)
+    {
+        stats.rollout_hard_limit_hits += 1;
+    }
     if depth == options.depth && !board.is_over() && board.get_health(you) > 0 {
         stats.rollout_depth_limit_hits += 1;
     }
@@ -1037,14 +1146,7 @@ fn rollout_from(
         WIN_REWARD
     } else {
         let gained = u32::from(board.get_length(you).saturating_sub(root_length));
-        // The rollout already tracks exactly which cells still hold food, so the evaluator can
-        // use that list instead of rescanning the board. When food guidance is off the list is
-        // never populated, so fall back to the board's own list.
-        let score = if options.food_guidance {
-            evaluate_board_with_food(&board, you, &food)
-        } else {
-            evaluate_board(&board, you)
-        };
+        let score = evaluate_board(&board, you);
         (leaf_reward(score) + gained * options.food_gain_reward).min(WIN_REWARD - 1)
     }
 }
@@ -1236,6 +1338,9 @@ fn run_workers(
                 .max_rollout_depth
                 .max(stats.max_rollout_depth);
             completion.stats.rollout_depth_limit_hits += stats.rollout_depth_limit_hits;
+            completion.stats.extended_rollouts += stats.extended_rollouts;
+            completion.stats.rollout_extra_steps += stats.rollout_extra_steps;
+            completion.stats.rollout_hard_limit_hits += stats.rollout_hard_limit_hits;
             if let Err(panic) = result {
                 completion.panic.get_or_insert(panic);
             }
@@ -1296,11 +1401,10 @@ pub fn mcts_search_with_publish(
         max_tree_depth_reached = stats.max_tree_depth == root.tree_depth,
         tree_depth_cap_truncated_search = stats.tree_depth_limit_hits > 0,
         tree_depth_limit_hits = stats.tree_depth_limit_hits,
-        max_rollout_depth = root.rollout_depth,
+        base_rollout_depth = root.rollout_depth,
         observed_max_rollout_depth = stats.max_rollout_depth,
-        max_rollout_depth_reached = stats.max_rollout_depth == root.rollout_depth,
-        rollout_depth_cap_truncated_search = stats.rollout_depth_limit_hits > 0,
-        rollout_depth_limit_hits = stats.rollout_depth_limit_hits,
+        rollout_depth_status = ?stats.rollout_depth_status(root.rollout_depth),
+        rollout_base_depth_cutoffs = stats.rollout_depth_limit_hits,
         "MCTS search depth telemetry"
     );
 }
@@ -1321,6 +1425,103 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let board = game.as_cell_board(&ids).expect("valid board");
         (board, ids[&game.you.id], ids[&game.board.snakes[0].id])
+    }
+
+    #[test]
+    fn rollout_depth_status_distinguishes_reached_from_extended() {
+        let mut stats = SearchDepthStats::default();
+        assert_eq!(
+            stats.rollout_depth_status(8),
+            RolloutDepthStatus::NotReached
+        );
+        stats.max_rollout_depth = 8;
+        assert_eq!(stats.rollout_depth_status(8), RolloutDepthStatus::Reached);
+        stats.max_rollout_depth = 32;
+        stats.extended_rollouts = 3;
+        stats.rollout_extra_steps = 45;
+        assert_eq!(
+            stats.rollout_depth_status(8),
+            RolloutDepthStatus::Extended {
+                rollouts: 3,
+                extra_steps: 45,
+                max_extra_steps: 24,
+            }
+        );
+        // Reaching the hard-cap depth alone need not mean truncation: the rollout may have
+        // ended naturally there. A recorded unresolved conflict distinguishes LimitHit.
+        stats.rollout_hard_limit_hits = 2;
+        assert_eq!(
+            stats.rollout_depth_status(8),
+            RolloutDepthStatus::LimitHit {
+                hits: 2,
+                rollouts: 3,
+                extra_steps: 45,
+                max_extra_steps: 24,
+            }
+        );
+    }
+
+    #[test]
+    fn rollout_extensions_accumulate_counts_and_extra_steps() {
+        let (board, you, _) = policy_fixture(Vec::new(), 100, true);
+        let node = Node::new_root_with_rollout_depth(board, 1);
+        let root_length = board.get_length(&you);
+        let mut combined = SearchDepthStats::default();
+        let mut expected_rollouts = 0;
+        let mut expected_steps = 0;
+        let mut expected_max = 0;
+        let mut expected_hits = 0;
+        for seed in 0..32 {
+            let mut single = SearchDepthStats::default();
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+            node.rollout_with_rng(&you, &mut single, &mut rng, root_length);
+            let extra = single.max_rollout_depth.saturating_sub(1);
+            expected_rollouts += u64::from(extra > 0);
+            expected_steps += u64::from(extra);
+            expected_max = expected_max.max(extra);
+            expected_hits += single.rollout_hard_limit_hits;
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+            node.rollout_with_rng(&you, &mut combined, &mut rng, root_length);
+        }
+        assert!(
+            expected_rollouts > 0,
+            "fixture must exercise tactical extensions"
+        );
+        assert!(expected_hits > 0, "fixture must exercise the hard cap");
+        assert_eq!(
+            combined.rollout_depth_status(1),
+            RolloutDepthStatus::LimitHit {
+                hits: expected_hits,
+                rollouts: expected_rollouts,
+                extra_steps: expected_steps,
+                max_extra_steps: expected_max,
+            }
+        );
+    }
+
+    #[test]
+    fn starvation_at_the_hard_cap_is_not_reported_as_truncation() {
+        let (board, you, _) = policy_fixture(Vec::new(), 4, true);
+        let node = Node::new_root_with_rollout_depth(board, 1);
+        let mut reached_cap = false;
+        for seed in 0..32 {
+            let mut stats = SearchDepthStats::default();
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+            let reward = node.rollout_with_rng(&you, &mut stats, &mut rng, board.get_length(&you));
+            assert_eq!(stats.rollout_hard_limit_hits, 0);
+            if stats.max_rollout_depth == 4 {
+                reached_cap = true;
+                assert_eq!(reward, 0, "four foodless moves exhaust our health");
+                assert!(matches!(
+                    stats.rollout_depth_status(1),
+                    RolloutDepthStatus::Extended { .. }
+                ));
+            }
+        }
+        assert!(
+            reached_cap,
+            "fixture must reach terminal starvation at the cap"
+        );
     }
 
     #[test]

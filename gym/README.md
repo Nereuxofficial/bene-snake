@@ -10,6 +10,42 @@ cargo run --release --package gym -- duel --agent1 mcts --agent2 heuristic --gam
 cargo run --release --package gym -- tournament --agents mcts,heuristic,minimax,random --games 100
 ```
 
+## Browser viewer and replays
+
+Add `--web` to a duel, tournament, or benchmark to record games and serve a
+clickable viewer at **http://127.0.0.1:8050**:
+
+```sh
+just gym --web duel --agent1 mcts --agent2 heuristic --games 20 --seed 1234
+just gym --web tournament --agents mcts,heuristic,minimax,random --games 20 --parallel
+```
+
+The game list shows both running and finished games. Select a game to inspect
+its board, food, snake health, and length. **Follow live** follows the latest turn
+and advances to the next running game. Pause, step with the arrow buttons or
+keyboard, scrub the turn slider, or change playback speed to inspect a replay.
+Space toggles playback. Game links retain their selection in the URL; the
+download link exports the complete replay as JSON.
+
+The server stays open after the games finish; press **Ctrl-C** to stop it.
+Completed games are saved atomically in `gym-replays/` (ignored by Git), and
+appear again on subsequent runs. Interrupted games are not saved. You can
+browse previously recorded games without running more:
+
+```sh
+just gym serve
+just gym serve --web-bind 127.0.0.1:9000 --replay-dir /tmp/my-gym-replays
+```
+
+Use `--turn-delay 100` with `--web` to pause 100 ms after each published frame,
+including turn zero, when fast agents finish too quickly to watch live.
+Recording and serving add overhead; leave `--web` off for timing benchmarks.
+Without `--web`, the gym neither records replays nor starts the web runtime.
+Only games recorded with the viewer enabled are available in the history.
+The viewer includes its assets locally and needs no frontend build or network
+connection. The default bind address is loopback; `--web-bind 0.0.0.0:8050`
+also makes it accessible from other machines on your network.
+
 ## Agent and policy variants
 
 | CLI value | Agent | Notes |

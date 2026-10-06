@@ -1,0 +1,139 @@
+{
+  "description": "Reproducible Arena request fixtures for the bounded tactical diagnostic (task B1).",
+  "source": "experiments/recent-arena-2026-10-07/requests.json",
+  "replay_frames": "experiments/recent-arena-2026-10-07/<game_id>.json",
+  "source_revision": "05007e123097f64242ebc28c2ee785e1e58519ed",
+  "expected": "head, length and live-snake count are taken from the replay frame at the request turn; the request itself must reproduce them. Expected moves are diagnostic labels, not assertions that a stochastic search must return that direction.",
+  "fixtures": [
+    {
+      "file": "b87bd568-b37c-4bc2-9d12-6bc55b834813-t289.json",
+      "game_id": "b87bd568-b37c-4bc2-9d12-6bc55b834813",
+      "turn": 289,
+      "you_id": "4ed28922-4866-43e8-935e-2a195fefeff1",
+      "expected_head": {
+        "x": 3,
+        "y": 2
+      },
+      "expected_length": 20,
+      "live_snake_count": 2,
+      "sha256": "f591de5e170bc0dc2081573920c7407189e8c8ffba6bdfd2ec1ed566d0871f94"
+    },
+    {
+      "file": "b87bd568-b37c-4bc2-9d12-6bc55b834813-t290.json",
+      "game_id": "b87bd568-b37c-4bc2-9d12-6bc55b834813",
+      "turn": 290,
+      "you_id": "4ed28922-4866-43e8-935e-2a195fefeff1",
+      "expected_head": {
+        "x": 3,
+        "y": 3
+      },
+      "expected_length": 20,
+      "live_snake_count": 2,
+      "sha256": "91796490c17863889e03ab9b4a604c3a7cf89bee0b5ec913d188faa9bfef0a90"
+    },
+    {
+      "file": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f-t94.json",
+      "game_id": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f",
+      "turn": 94,
+      "you_id": "75b8e5d9-753a-46fa-95c0-d33b2fcdacf1",
+      "expected_head": {
+        "x": 4,
+        "y": 6
+      },
+      "expected_length": 11,
+      "live_snake_count": 3,
+      "sha256": "a07db30d39dd56ab6105bf8566620ef25a789f45e5c1f4b4ee3a0bb87b9adb26"
+    },
+    {
+      "file": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f-t95.json",
+      "game_id": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f",
+      "turn": 95,
+      "you_id": "75b8e5d9-753a-46fa-95c0-d33b2fcdacf1",
+      "expected_head": {
+        "x": 3,
+        "y": 6
+      },
+      "expected_length": 11,
+      "live_snake_count": 3,
+      "sha256": "c45beab2c011f70064562dcaebf693673d054f5ca5b64aa4e85a5ded5de69400"
+    },
+    {
+      "file": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f-t96.json",
+      "game_id": "f0326b4f-b3c5-4f3a-8aec-0bb61ed2d98f",
+      "turn": 96,
+      "you_id": "75b8e5d9-753a-46fa-95c0-d33b2fcdacf1",
+      "expected_head": {
+        "x": 3,
+        "y": 5
+      },
+      "expected_length": 11,
+      "live_snake_count": 3,
+      "sha256": "474d2e09060a08eda4aabf2728763fff3b236746fc2aa8ad405b92bc0ea8866f"
+    },
+    {
+      "file": "f624d5d8-f90d-4fad-b375-b94e281e4d62-t179.json",
+      "game_id": "f624d5d8-f90d-4fad-b375-b94e281e4d62",
+      "turn": 179,
+      "you_id": "91e5b9e9-dbae-4942-b09d-b1b03683cbdd",
+      "expected_head": {
+        "x": 3,
+        "y": 4
+      },
+      "expected_length": 13,
+      "live_snake_count": 3,
+      "sha256": "237c13f36a01f858bf059683b5b40009bcc42428e35aed45b69b739ed52dd9c7"
+    },
+    {
+      "file": "f624d5d8-f90d-4fad-b375-b94e281e4d62-t181.json",
+      "game_id": "f624d5d8-f90d-4fad-b375-b94e281e4d62",
+      "turn": 181,
+      "you_id": "91e5b9e9-dbae-4942-b09d-b1b03683cbdd",
+      "expected_head": {
+        "x": 4,
+        "y": 5
+      },
+      "expected_length": 13,
+      "live_snake_count": 3,
+      "sha256": "2e9b9042096f0cc296e876064500b53d1c6bb4ce62984b34b343d4c5833265a1"
+    },
+    {
+      "file": "118fe3bd-01da-4ede-951c-4fce02a2264f-t153.json",
+      "game_id": "118fe3bd-01da-4ede-951c-4fce02a2264f",
+      "turn": 153,
+      "you_id": "409adcb6-22f9-4200-9627-e58a596cf87e",
+      "expected_head": {
+        "x": 2,
+        "y": 9
+      },
+      "expected_length": 15,
+      "live_snake_count": 3,
+      "sha256": "9b28ed2824b6dbc75a2250e7a7968cf630380e2553ec68b6269e372f23f878e6"
+    },
+    {
+      "file": "118fe3bd-01da-4ede-951c-4fce02a2264f-t155.json",
+      "game_id": "118fe3bd-01da-4ede-951c-4fce02a2264f",
+      "turn": 155,
+      "you_id": "409adcb6-22f9-4200-9627-e58a596cf87e",
+      "expected_head": {
+        "x": 2,
+        "y": 7
+      },
+      "expected_length": 15,
+      "live_snake_count": 3,
+      "sha256": "8d9586e5c8f896cd402e6dc4cf330be82442d9ee910f3d45140155d70c2adc59"
+    },
+    {
+      "file": "118fe3bd-01da-4ede-951c-4fce02a2264f-t158.json",
+      "game_id": "118fe3bd-01da-4ede-951c-4fce02a2264f",
+      "turn": 158,
+      "you_id": "409adcb6-22f9-4200-9627-e58a596cf87e",
+      "expected_head": {
+        "x": 2,
+        "y": 4
+      },
+      "expected_length": 15,
+      "live_snake_count": 3,
+      "sha256": "473095817a61469f0aea5dbab0969cd41faeb406a0d2d0c045c96514fd959b11"
+    }
+  ]
+}
