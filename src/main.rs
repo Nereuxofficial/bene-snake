@@ -188,9 +188,8 @@ async fn deploy_ready() -> axum::http::StatusCode {
 
 async fn get_move(body: String) -> Response {
     let start = std::time::Instant::now();
-    let _foreground = tree_caches().pause();
-    tree_caches().wait_idle().await;
-    info!("Got move request: {}", body);
+    // Decoding only normalises the request and records it; the tree is untouched, so it
+    // can happen before admission without racing the previous turn's search.
     let decoded = match decode_state(body) {
         Ok(decoded) => decoded,
         Err(e) => {
@@ -198,6 +197,9 @@ async fn get_move(body: String) -> Response {
             return Json(json!({"move": Move::Up})).into_response();
         }
     };
+    let _admitted = tree_caches().admit(&decoded.game_id).await;
+    tree_caches().wait_idle().await;
+    info!("Got move request for turn {}", decoded.turn);
     let fallback = decoded.response_moves.fallback;
     let Some(board) = decoded.board else {
         let games = GAME_STATES.get().unwrap().lock();
@@ -240,6 +242,8 @@ async fn get_move(body: String) -> Response {
         fallback,
         acceptable: decoded.response_moves.acceptable,
     };
+    // The admitted handler already holds the per-game lock; this pause only has to outlive
+    // the handler future, which may end while the worker is still stopping.
     let worker_foreground = tree_caches().pause();
     tokio::task::spawn_blocking(move || {
         // A cancelled handler may return while its foreground workers are stopping.
@@ -492,7 +496,12 @@ mod tests {
         let mut game: Game =
             serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json")).unwrap();
         game.game.id = "downtime-reuse-integration".into();
-        game.game.timeout = 150;
+        // The production timeout, not a tighter one. This test needs the search to publish
+        // a tree before it can check anything about pondering, and a short budget starves
+        // the workers when the whole suite runs in parallel on one shared search pool, so
+        // the request falls back and never populates a cache. The search stops on its own
+        // deadline, so a generous budget does not slow the suite down.
+        game.game.timeout = 500;
         game.board.food.clear();
         let response = get_move(serde_json::to_string(&game).unwrap()).await;
         let ids = GAME_STATES.get().unwrap().lock()[&game.game.id].ids.clone();
@@ -649,6 +658,39 @@ mod tests {
             "expected one of the four lowercase moves, got {mv:?}"
         );
         end(serde_json::to_string(&game).unwrap()).await;
+    }
+
+    /// Overlapping same-game requests must both be answered: the Arena times out the
+    /// earlier turn and kills the snake when one of them publishes nothing.
+    #[tokio::test]
+    async fn overlapping_requests_for_one_game_are_both_answered() {
+        let mut game: Game =
+            serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json")).unwrap();
+        game.game.id = "overlapping-same-game".into();
+        game.game.timeout = 60;
+        game.board.food.clear();
+        let body = serde_json::to_string(&game).unwrap();
+        let first = tokio::spawn({
+            let body = body.clone();
+            async move { move_json(body).await }
+        });
+        // The next turn's request arrives while the first handler is still searching.
+        let second = tokio::spawn({
+            let body = body.clone();
+            async move { move_json(body).await }
+        });
+        for (name, handle) in [("first", first), ("second", second)] {
+            let value = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .unwrap_or_else(|_| panic!("{name} request never produced a response"))
+                .expect("request task must not panic");
+            let mv = value.get("move").and_then(Value::as_str).unwrap_or("");
+            assert!(
+                ["up", "down", "left", "right"].contains(&mv),
+                "{name} response carried {mv:?}"
+            );
+        }
+        end(body).await;
     }
 
     #[tokio::test]

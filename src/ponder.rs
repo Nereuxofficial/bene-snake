@@ -46,6 +46,8 @@ struct Shared {
 
 pub struct TreeCaches {
     shared: Arc<Shared>,
+    /// One lock per game, held via `Weak` so finished games release it.
+    game_locks: Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -59,14 +61,52 @@ impl Drop for Foreground {
     }
 }
 
+/// Held for one game's move handler. A second request for the same game waits for the
+/// first to respond instead of racing it, which used to make one of them publish nothing.
+pub struct GameAdmission {
+    // `OwnedMutexGuard` is `'static` by construction: it owns the `Arc` backing the lock.
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+    _foreground: Foreground,
+}
+
 impl TreeCaches {
     pub fn new() -> Self {
+        Self::spawn(PONDER_WORKERS)
+    }
+
+    /// Admission ignores the background pool, but every instance spawns real OS threads.
+    #[cfg(test)]
+    pub fn with_ponder_workers(workers: usize) -> Self {
+        Self::spawn(workers)
+    }
+
+    /// Serialise move handling per game. Also pauses pondering for the duration.
+    pub async fn admit(&self, game_id: &str) -> GameAdmission {
+        let lock = self.lock_for(game_id);
+        GameAdmission {
+            _lock: lock.lock_owned().await,
+            _foreground: self.pause(),
+        }
+    }
+
+    fn lock_for(&self, game_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.game_locks.lock().unwrap();
+        if let Some(lock) = locks.get(game_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(game_id.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
+    fn spawn(ponder_workers: usize) -> Self {
         let shared = Arc::new(Shared::default());
         let mut caches = Self {
             shared,
-            workers: Vec::with_capacity(PONDER_WORKERS),
+            game_locks: Mutex::new(BTreeMap::new()),
+            workers: Vec::with_capacity(ponder_workers),
         };
-        for index in 0..PONDER_WORKERS {
+        for index in 0..ponder_workers {
             let worker_shared = Arc::clone(&caches.shared);
             caches.workers.push(
                 std::thread::Builder::new()
@@ -454,5 +494,59 @@ mod tests {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         wait_for_iterations(&caches, &["game"]).await;
+    }
+
+    #[tokio::test]
+    async fn one_game_serves_one_move_handler_at_a_time() {
+        let caches = Arc::new(TreeCaches::with_ponder_workers(1));
+        let holding = Duration::from_millis(120);
+        let (started, acquired) = tokio::sync::oneshot::channel();
+        let first = tokio::spawn({
+            let caches = Arc::clone(&caches);
+            async move {
+                let _admitted = caches.admit("raced-game").await;
+                let _ = started.send(());
+                tokio::time::sleep(holding).await;
+            }
+        });
+        // Race only once the first is definitely holding, so this cannot depend on load.
+        acquired.await.unwrap();
+        let waited = Arc::new(std::sync::Mutex::new(Duration::ZERO));
+        let second = tokio::spawn({
+            let caches = Arc::clone(&caches);
+            let waited = Arc::clone(&waited);
+            async move {
+                let start = Instant::now();
+                let _admitted = caches.admit("raced-game").await;
+                *waited.lock().unwrap() = start.elapsed();
+            }
+        });
+        first.await.unwrap();
+        second.await.unwrap();
+        let waited = *waited.lock().unwrap();
+        assert!(
+            waited >= holding - Duration::from_millis(30),
+            "second handler entered after {waited:?}; expected it to queue behind the first"
+        );
+    }
+
+    #[tokio::test]
+    async fn different_games_are_admitted_concurrently() {
+        let caches = Arc::new(TreeCaches::with_ponder_workers(1));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let holding = tokio::spawn({
+            let caches = Arc::clone(&caches);
+            async move {
+                let _admitted = caches.admit("slow-game").await;
+                release_rx.await.unwrap();
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let other = tokio::time::timeout(Duration::from_millis(200), caches.admit("other-game"))
+            .await
+            .expect("a different game must not wait on another game's lock");
+        drop(other);
+        release_tx.send(()).unwrap();
+        holding.await.unwrap();
     }
 }
