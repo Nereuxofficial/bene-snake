@@ -153,17 +153,6 @@ fn search_budget(game_timeout_ms: i64, elapsed: Duration) -> Duration {
         .saturating_sub(elapsed)
 }
 
-/// Experiment (B2) toggle, disabled by default until equal-time validation (task E).
-/// Enabled by `BENE_TACTICAL_ROOT=1`.
-fn tactical_root_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("BENE_TACTICAL_ROOT")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes"))
-            .unwrap_or(false)
-    })
-}
-
 struct StopSearch(Arc<AtomicBool>);
 
 impl Drop for StopSearch {
@@ -227,25 +216,21 @@ async fn get_move(body: String) -> Response {
         return Json(json!({"move": fallback})).into_response();
     };
     let carried_visits = root_node.visits();
-    // Experiment (B2): compute the bounded tactical root filter once, before the search
-    // worker starts, so its cost is inside the move deadline via `start.elapsed()` below.
-    // A panic or budget exhaustion yields `None`, preserving the default selection.
-    let tactical_enabled = tactical_root_enabled();
-    let tactical_filter = tactical_enabled
-        .then(|| {
-            catch_unwind(AssertUnwindSafe(|| {
-                let limits = lib::tactical::Limits {
-                    start_horizon: 2,
-                    max_horizon: 4,
-                    max_simulator_calls: 2_000,
-                    deadline: Some(Instant::now() + Duration::from_millis(2)),
-                    stop: None,
-                };
-                root_node.tactical_root_filter(you, &limits)
-            }))
-            .ok()
-        })
-        .flatten();
+    // Tactical root filter (B2): computed once before the search worker starts, so its cost
+    // is inside the move deadline via `start.elapsed()` below. A panic or budget exhaustion
+    // yields `None`, which reproduces the unfiltered selection. Two-to-four complete turns
+    // within a 2 ms / 2,000-call ceiling; these are measured bounds, not validated constants.
+    let tactical_filter = catch_unwind(AssertUnwindSafe(|| {
+        let limits = lib::tactical::Limits {
+            start_horizon: 2,
+            max_horizon: 4,
+            max_simulator_calls: 2_000,
+            deadline: Some(Instant::now() + Duration::from_millis(2)),
+            stop: None,
+        };
+        root_node.tactical_root_filter(you, &limits)
+    }))
+    .ok();
     let stop = StopSearch(Arc::new(AtomicBool::new(false)));
     let stop_for_search = Arc::clone(&stop.0);
     let game_id = decoded.game_id.clone();
@@ -263,11 +248,7 @@ async fn get_move(body: String) -> Response {
         mcts_search_with_publish(root_node.clone(), &you, stop_for_search, || {
             // Only this worker reads its tree, after successful search completion.
             let result = validated_search_result(true, &worker_moves, || {
-                let chosen = if tactical_enabled {
-                    root_node.best_move_with_root_filter(you, tactical_filter.as_ref())?
-                } else {
-                    root_node.best_move(you)?
-                };
+                let chosen = root_node.best_move_with_root_filter(you, tactical_filter.as_ref())?;
                 Some((chosen, SearchTreeCache::after_move(&root_node, you, chosen)))
             });
             // The handler need not wait for telemetry or destruction of the unused tree.
