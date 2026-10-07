@@ -191,6 +191,7 @@ pub fn analyze(
         }
     }
     let mut surviving = 0;
+    let mut wide = 0;
     let mut preferred = weights;
     for mv in Move::all() {
         let index = mv.as_index();
@@ -220,16 +221,30 @@ pub fn analyze(
             let space = region(available, &food, &rivals, next, board.get_health(&you));
             // Bound all preferences: static routes do not account for future tail release,
             // hazards or opponent movement. Unreachable/contested food gets no route bonus.
-            let factor = 1 + (3 * space.capacity / next.len).min(3) as u8;
+            // Cells behind a single door are worth far less than the same count behind
+            // several, so discount capacity by the exit count before it scales the weight.
+            // Four is the ceiling for an interior cell, leaving open areas unchanged.
+            let capacity = space.capacity * usize::from(space.exits.clamp(1, 4)) / 4;
+            let factor = 1 + (3 * capacity / next.len).min(3) as u8;
             let food_bonus = space.food_distance.map_or(0, |d| 24 / (1 + d));
             preferred[index] = preferred[index]
                 .saturating_mul(factor)
                 .saturating_add(food_bonus)
                 .saturating_add(space.exits.min(3) * 2);
+            if space.exits >= 2 {
+                wide |= 1 << index;
+            }
         }
     }
+    // A one-exit destination is a corridor that one rival head can seal, so prefer any
+    // candidate that keeps two exits. This has to be a mask constraint, not a weight:
+    // `choose_from_mask` only consults weights after visits and mean reward, so the guard
+    // is otherwise never heard. Fall back when no candidate is wide, so forced positions
+    // stay playable.
+    let surviving = if surviving == 0 { mask } else { surviving };
+    let wide = wide & surviving;
     EscapeAnalysis {
-        mask: if surviving == 0 { mask } else { surviving },
+        mask: if wide == 0 { surviving } else { wide },
         weights: preferred,
     }
 }

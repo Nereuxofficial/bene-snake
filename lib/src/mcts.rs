@@ -778,6 +778,12 @@ impl Node {
         root
     }
 
+    /// Root candidate mask and preference weights, for offline replay probes.
+    pub fn root_candidates(&self, you: SnakeId) -> Option<(u8, [u8; 4])> {
+        self.prepare_escape_guard(you);
+        Some((self.tree_own_mask(you)?, self.selection_policy(you)))
+    }
+
     /// Disable only the root escape checks for controlled comparisons.
     pub fn new_root_with_escape_guard(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
         let mut root = Self::new_root(board);
