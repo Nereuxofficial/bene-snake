@@ -60,9 +60,9 @@ const WITNESS_NODE_BUDGET: u32 = 4096;
 
 /// Resource bounds for one [`analyze`] call.
 ///
-/// The default is the provisional experimental ceiling from the guide: 2 ms of
-/// wall time and 2,000 simulator calls total per triggered root, deepening from two
-/// to four complete turns. These are measured bounds, not validated constants.
+/// Deepen from two through ten complete turns, sharing a 10 ms wall-time ceiling
+/// and 20,000 simulator calls across candidates and depths. Incomplete passes
+/// retain the last fully completed horizon.
 pub struct Limits<'a> {
     /// First (shallowest) horizon to test. Clamped to at least one.
     pub start_horizon: u8,
@@ -80,9 +80,9 @@ impl Default for Limits<'_> {
     fn default() -> Self {
         Self {
             start_horizon: 2,
-            max_horizon: 4,
-            max_simulator_calls: 2_000,
-            deadline: Some(Instant::now() + Duration::from_millis(2)),
+            max_horizon: 10,
+            max_simulator_calls: 20_000,
+            deadline: Some(Instant::now() + Duration::from_millis(10)),
             stop: None,
         }
     }
@@ -1202,6 +1202,41 @@ mod tests {
     }
 
     // ---- Root filter (task B2) -----------------------------------------------
+
+    #[test]
+    fn crowded_duel_filters_the_eight_turn_trap_with_the_ten_turn_budget() {
+        let game: Game = serde_json::from_str(include_str!(
+            "../fixtures/crowded-duel-df620bcb8c8ad8e7.json"
+        ))
+        .unwrap();
+        let ids = build_snake_id_map(&game);
+        let you = ids[&game.you.id];
+        let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+        let base = candidate_mask(&board, you);
+        let shallow = root_filter(&board, you, base, &Limits::for_test(4));
+        assert!(!shallow.applied);
+
+        // Disable only wall time so the regression is deterministic; retain the
+        // production horizon and shared simulator-call budget.
+        let limits = Limits {
+            deadline: None,
+            ..Limits::default()
+        };
+        let deeper = root_filter(&board, you, base, &limits);
+        let analysis = deeper.analysis.as_ref().unwrap();
+        assert_eq!(analysis.completed_horizon, 10);
+        assert!(!analysis.budget_exhausted);
+        assert!(matches!(
+            analysis.verdict(Move::Up),
+            MoveVerdict::Exposed { horizon: 8, .. }
+        ));
+        assert!(matches!(
+            analysis.verdict(Move::Down),
+            MoveVerdict::ProvenSafe { horizon: 10 }
+        ));
+        assert!(deeper.applied);
+        assert_eq!(deeper.mask, 1 << Move::Down.as_index());
+    }
 
     fn fixture_board(game_id: &str, turn: u32) -> (CellBoard4Snakes11x11, SnakeId) {
         let game = load_game(game_id, turn);

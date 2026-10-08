@@ -1,0 +1,1892 @@
+{
+  "schema": 1,
+  "master_seed": 20261008,
+  "examples": [
+    {
+      "family": "unique_escape",
+      "seed": 2290659837957336629,
+      "parameters": {
+        "opponent_health": 63,
+        "symmetry": 2,
+        "x": 4,
+        "y": 3
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 78,
+              "head": {
+                "x": 10,
+                "y": 10
+              },
+              "body": [
+                {
+                  "x": 10,
+                  "y": 10
+                },
+                {
+                  "x": 10,
+                  "y": 9
+                },
+                {
+                  "x": 9,
+                  "y": 9
+                },
+                {
+                  "x": 8,
+                  "y": 9
+                },
+                {
+                  "x": 7,
+                  "y": 9
+                },
+                {
+                  "x": 6,
+                  "y": 9
+                },
+                {
+                  "x": 5,
+                  "y": 9
+                }
+              ],
+              "length": 7
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 63,
+              "head": {
+                "x": 1,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 2
+                },
+                {
+                  "x": 1,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 78,
+          "head": {
+            "x": 10,
+            "y": 10
+          },
+          "body": [
+            {
+              "x": 10,
+              "y": 10
+            },
+            {
+              "x": 10,
+              "y": 9
+            },
+            {
+              "x": 9,
+              "y": 9
+            },
+            {
+              "x": 8,
+              "y": 9
+            },
+            {
+              "x": 7,
+              "y": 9
+            },
+            {
+              "x": 6,
+              "y": 9
+            },
+            {
+              "x": 5,
+              "y": 9
+            }
+          ],
+          "length": 7
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 2,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "unique_escape",
+      "seed": 9666093670233867406,
+      "parameters": {
+        "opponent_health": 73,
+        "symmetry": 3,
+        "x": 3,
+        "y": 2
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 82,
+              "head": {
+                "x": 0,
+                "y": 10
+              },
+              "body": [
+                {
+                  "x": 0,
+                  "y": 10
+                },
+                {
+                  "x": 1,
+                  "y": 10
+                },
+                {
+                  "x": 1,
+                  "y": 9
+                },
+                {
+                  "x": 1,
+                  "y": 8
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 73,
+              "head": {
+                "x": 9,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 9,
+                  "y": 1
+                },
+                {
+                  "x": 8,
+                  "y": 1
+                },
+                {
+                  "x": 7,
+                  "y": 1
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 82,
+          "head": {
+            "x": 0,
+            "y": 10
+          },
+          "body": [
+            {
+              "x": 0,
+              "y": 10
+            },
+            {
+              "x": 1,
+              "y": 10
+            },
+            {
+              "x": 1,
+              "y": 9
+            },
+            {
+              "x": 1,
+              "y": 8
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 2,
+      "labels": {
+        "up": "Failure",
+        "down": "Success",
+        "left": "Failure",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "head_contest",
+      "seed": 8161287091965670783,
+      "parameters": {
+        "length_margin": -1,
+        "opponent_health": 47,
+        "symmetry": 5,
+        "x": 2,
+        "y": 5
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 5,
+              "y": 6
+            },
+            {
+              "x": 4,
+              "y": 7
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 3,
+              "head": {
+                "x": 5,
+                "y": 7
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 7
+                },
+                {
+                  "x": 5,
+                  "y": 8
+                },
+                {
+                  "x": 5,
+                  "y": 9
+                },
+                {
+                  "x": 5,
+                  "y": 10
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 47,
+              "head": {
+                "x": 5,
+                "y": 5
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 5
+                },
+                {
+                  "x": 5,
+                  "y": 4
+                },
+                {
+                  "x": 5,
+                  "y": 3
+                },
+                {
+                  "x": 5,
+                  "y": 2
+                },
+                {
+                  "x": 5,
+                  "y": 1
+                }
+              ],
+              "length": 5
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 3,
+          "head": {
+            "x": 5,
+            "y": 7
+          },
+          "body": [
+            {
+              "x": 5,
+              "y": 7
+            },
+            {
+              "x": 5,
+              "y": 8
+            },
+            {
+              "x": 5,
+              "y": 9
+            },
+            {
+              "x": 5,
+              "y": 10
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 3,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "head_contest",
+      "seed": 16920756229173201404,
+      "parameters": {
+        "length_margin": 0,
+        "opponent_health": 49,
+        "symmetry": 0,
+        "x": 3,
+        "y": 6
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 4,
+              "y": 6
+            },
+            {
+              "x": 3,
+              "y": 7
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 3,
+              "head": {
+                "x": 3,
+                "y": 6
+              },
+              "body": [
+                {
+                  "x": 3,
+                  "y": 6
+                },
+                {
+                  "x": 2,
+                  "y": 6
+                },
+                {
+                  "x": 1,
+                  "y": 6
+                }
+              ],
+              "length": 3
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 49,
+              "head": {
+                "x": 5,
+                "y": 6
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 6
+                },
+                {
+                  "x": 6,
+                  "y": 6
+                },
+                {
+                  "x": 7,
+                  "y": 6
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 3,
+          "head": {
+            "x": 3,
+            "y": 6
+          },
+          "body": [
+            {
+              "x": 3,
+              "y": 6
+            },
+            {
+              "x": 2,
+              "y": 6
+            },
+            {
+              "x": 1,
+              "y": 6
+            }
+          ],
+          "length": 3
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 3,
+      "labels": {
+        "up": "Success",
+        "down": "Failure",
+        "left": "Failure",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "tail_growth",
+      "seed": 16458947923934888680,
+      "parameters": {
+        "opponent_health": 67,
+        "symmetry": 2,
+        "tail_stacked": 0,
+        "x": 3,
+        "y": 5
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 9,
+              "y": 5
+            },
+            {
+              "x": 5,
+              "y": 5
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 3,
+              "head": {
+                "x": 7,
+                "y": 5
+              },
+              "body": [
+                {
+                  "x": 7,
+                  "y": 5
+                },
+                {
+                  "x": 7,
+                  "y": 6
+                },
+                {
+                  "x": 8,
+                  "y": 6
+                },
+                {
+                  "x": 8,
+                  "y": 5
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 67,
+              "head": {
+                "x": 1,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 2
+                },
+                {
+                  "x": 1,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 3,
+          "head": {
+            "x": 7,
+            "y": 5
+          },
+          "body": [
+            {
+              "x": 7,
+              "y": 5
+            },
+            {
+              "x": 7,
+              "y": 6
+            },
+            {
+              "x": 8,
+              "y": 6
+            },
+            {
+              "x": 8,
+              "y": 5
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 3,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Success"
+      }
+    },
+    {
+      "family": "tail_growth",
+      "seed": 9351987713423587347,
+      "parameters": {
+        "opponent_health": 79,
+        "symmetry": 6,
+        "tail_stacked": 1,
+        "x": 4,
+        "y": 4
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 2,
+              "y": 6
+            },
+            {
+              "x": 6,
+              "y": 6
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 3,
+              "head": {
+                "x": 4,
+                "y": 6
+              },
+              "body": [
+                {
+                  "x": 4,
+                  "y": 6
+                },
+                {
+                  "x": 4,
+                  "y": 7
+                },
+                {
+                  "x": 3,
+                  "y": 7
+                },
+                {
+                  "x": 3,
+                  "y": 6
+                },
+                {
+                  "x": 3,
+                  "y": 6
+                }
+              ],
+              "length": 5
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 79,
+              "head": {
+                "x": 9,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 9,
+                  "y": 1
+                },
+                {
+                  "x": 9,
+                  "y": 2
+                },
+                {
+                  "x": 9,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 3,
+          "head": {
+            "x": 4,
+            "y": 6
+          },
+          "body": [
+            {
+              "x": 4,
+              "y": 6
+            },
+            {
+              "x": 4,
+              "y": 7
+            },
+            {
+              "x": 3,
+              "y": 7
+            },
+            {
+              "x": 3,
+              "y": 6
+            },
+            {
+              "x": 3,
+              "y": 6
+            }
+          ],
+          "length": 5
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 3,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Failure",
+        "right": "Success"
+      }
+    },
+    {
+      "family": "food_access",
+      "seed": 2529522208174478650,
+      "parameters": {
+        "food_distance": 3,
+        "opponent_health": 30,
+        "symmetry": 2,
+        "x": 2,
+        "y": 5
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 5,
+              "y": 5
+            },
+            {
+              "x": 8,
+              "y": 7
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 4,
+              "head": {
+                "x": 8,
+                "y": 5
+              },
+              "body": [
+                {
+                  "x": 8,
+                  "y": 5
+                },
+                {
+                  "x": 8,
+                  "y": 6
+                },
+                {
+                  "x": 9,
+                  "y": 6
+                },
+                {
+                  "x": 9,
+                  "y": 7
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 30,
+              "head": {
+                "x": 1,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 2
+                },
+                {
+                  "x": 1,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 4,
+          "head": {
+            "x": 8,
+            "y": 5
+          },
+          "body": [
+            {
+              "x": 8,
+              "y": 5
+            },
+            {
+              "x": 8,
+              "y": 6
+            },
+            {
+              "x": 9,
+              "y": 6
+            },
+            {
+              "x": 9,
+              "y": 7
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "eat_and_survive",
+        "food": [
+          {
+            "x": 5,
+            "y": 5
+          },
+          {
+            "x": 8,
+            "y": 7
+          }
+        ]
+      },
+      "horizon": 4,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Success"
+      }
+    },
+    {
+      "family": "food_access",
+      "seed": 836964032938989914,
+      "parameters": {
+        "food_distance": 1,
+        "opponent_health": 56,
+        "symmetry": 6,
+        "x": 2,
+        "y": 3
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 3,
+              "y": 7
+            },
+            {
+              "x": 2,
+              "y": 9
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 2,
+              "head": {
+                "x": 2,
+                "y": 7
+              },
+              "body": [
+                {
+                  "x": 2,
+                  "y": 7
+                },
+                {
+                  "x": 2,
+                  "y": 8
+                },
+                {
+                  "x": 1,
+                  "y": 8
+                },
+                {
+                  "x": 1,
+                  "y": 9
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 56,
+              "head": {
+                "x": 9,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 9,
+                  "y": 1
+                },
+                {
+                  "x": 9,
+                  "y": 2
+                },
+                {
+                  "x": 9,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 2,
+          "head": {
+            "x": 2,
+            "y": 7
+          },
+          "body": [
+            {
+              "x": 2,
+              "y": 7
+            },
+            {
+              "x": 2,
+              "y": 8
+            },
+            {
+              "x": 1,
+              "y": 8
+            },
+            {
+              "x": 1,
+              "y": 9
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "eat_and_survive",
+        "food": [
+          {
+            "x": 3,
+            "y": 7
+          },
+          {
+            "x": 2,
+            "y": 9
+          }
+        ]
+      },
+      "horizon": 2,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Failure",
+        "right": "Success"
+      }
+    },
+    {
+      "family": "delayed_trap",
+      "seed": 12901063860631861261,
+      "parameters": {
+        "corridor_length": 5,
+        "corridor_y": 4,
+        "opponent_health": 40,
+        "symmetry": 4,
+        "x": 3,
+        "y": 4
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 85,
+              "head": {
+                "x": 5,
+                "y": 4
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 4
+                },
+                {
+                  "x": 5,
+                  "y": 3
+                },
+                {
+                  "x": 6,
+                  "y": 3
+                },
+                {
+                  "x": 7,
+                  "y": 3
+                },
+                {
+                  "x": 8,
+                  "y": 3
+                },
+                {
+                  "x": 9,
+                  "y": 3
+                },
+                {
+                  "x": 10,
+                  "y": 3
+                },
+                {
+                  "x": 10,
+                  "y": 4
+                },
+                {
+                  "x": 10,
+                  "y": 5
+                },
+                {
+                  "x": 9,
+                  "y": 5
+                },
+                {
+                  "x": 8,
+                  "y": 5
+                },
+                {
+                  "x": 7,
+                  "y": 5
+                },
+                {
+                  "x": 6,
+                  "y": 5
+                },
+                {
+                  "x": 5,
+                  "y": 5
+                },
+                {
+                  "x": 4,
+                  "y": 5
+                },
+                {
+                  "x": 3,
+                  "y": 5
+                },
+                {
+                  "x": 3,
+                  "y": 6
+                },
+                {
+                  "x": 3,
+                  "y": 7
+                },
+                {
+                  "x": 4,
+                  "y": 7
+                },
+                {
+                  "x": 5,
+                  "y": 7
+                }
+              ],
+              "length": 20
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 40,
+              "head": {
+                "x": 1,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0
+                },
+                {
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 85,
+          "head": {
+            "x": 5,
+            "y": 4
+          },
+          "body": [
+            {
+              "x": 5,
+              "y": 4
+            },
+            {
+              "x": 5,
+              "y": 3
+            },
+            {
+              "x": 6,
+              "y": 3
+            },
+            {
+              "x": 7,
+              "y": 3
+            },
+            {
+              "x": 8,
+              "y": 3
+            },
+            {
+              "x": 9,
+              "y": 3
+            },
+            {
+              "x": 10,
+              "y": 3
+            },
+            {
+              "x": 10,
+              "y": 4
+            },
+            {
+              "x": 10,
+              "y": 5
+            },
+            {
+              "x": 9,
+              "y": 5
+            },
+            {
+              "x": 8,
+              "y": 5
+            },
+            {
+              "x": 7,
+              "y": 5
+            },
+            {
+              "x": 6,
+              "y": 5
+            },
+            {
+              "x": 5,
+              "y": 5
+            },
+            {
+              "x": 4,
+              "y": 5
+            },
+            {
+              "x": 3,
+              "y": 5
+            },
+            {
+              "x": 3,
+              "y": 6
+            },
+            {
+              "x": 3,
+              "y": 7
+            },
+            {
+              "x": 4,
+              "y": 7
+            },
+            {
+              "x": 5,
+              "y": 7
+            }
+          ],
+          "length": 20
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 5,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "delayed_trap",
+      "seed": 17659583860265096352,
+      "parameters": {
+        "corridor_length": 5,
+        "corridor_y": 4,
+        "opponent_health": 74,
+        "symmetry": 4,
+        "x": 3,
+        "y": 3
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 73,
+              "head": {
+                "x": 5,
+                "y": 4
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 4
+                },
+                {
+                  "x": 5,
+                  "y": 3
+                },
+                {
+                  "x": 6,
+                  "y": 3
+                },
+                {
+                  "x": 7,
+                  "y": 3
+                },
+                {
+                  "x": 8,
+                  "y": 3
+                },
+                {
+                  "x": 9,
+                  "y": 3
+                },
+                {
+                  "x": 10,
+                  "y": 3
+                },
+                {
+                  "x": 10,
+                  "y": 4
+                },
+                {
+                  "x": 10,
+                  "y": 5
+                },
+                {
+                  "x": 9,
+                  "y": 5
+                },
+                {
+                  "x": 8,
+                  "y": 5
+                },
+                {
+                  "x": 7,
+                  "y": 5
+                },
+                {
+                  "x": 6,
+                  "y": 5
+                },
+                {
+                  "x": 5,
+                  "y": 5
+                },
+                {
+                  "x": 4,
+                  "y": 5
+                },
+                {
+                  "x": 3,
+                  "y": 5
+                },
+                {
+                  "x": 3,
+                  "y": 6
+                },
+                {
+                  "x": 3,
+                  "y": 7
+                },
+                {
+                  "x": 4,
+                  "y": 7
+                },
+                {
+                  "x": 5,
+                  "y": 7
+                }
+              ],
+              "length": 20
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 74,
+              "head": {
+                "x": 1,
+                "y": 1
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 1
+                },
+                {
+                  "x": 1,
+                  "y": 0
+                },
+                {
+                  "x": 0,
+                  "y": 0
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 73,
+          "head": {
+            "x": 5,
+            "y": 4
+          },
+          "body": [
+            {
+              "x": 5,
+              "y": 4
+            },
+            {
+              "x": 5,
+              "y": 3
+            },
+            {
+              "x": 6,
+              "y": 3
+            },
+            {
+              "x": 7,
+              "y": 3
+            },
+            {
+              "x": 8,
+              "y": 3
+            },
+            {
+              "x": 9,
+              "y": 3
+            },
+            {
+              "x": 10,
+              "y": 3
+            },
+            {
+              "x": 10,
+              "y": 4
+            },
+            {
+              "x": 10,
+              "y": 5
+            },
+            {
+              "x": 9,
+              "y": 5
+            },
+            {
+              "x": 8,
+              "y": 5
+            },
+            {
+              "x": 7,
+              "y": 5
+            },
+            {
+              "x": 6,
+              "y": 5
+            },
+            {
+              "x": 5,
+              "y": 5
+            },
+            {
+              "x": 4,
+              "y": 5
+            },
+            {
+              "x": 3,
+              "y": 5
+            },
+            {
+              "x": 3,
+              "y": 6
+            },
+            {
+              "x": 3,
+              "y": 7
+            },
+            {
+              "x": 4,
+              "y": 7
+            },
+            {
+              "x": 5,
+              "y": 7
+            }
+          ],
+          "length": 20
+        }
+      },
+      "objective": {
+        "kind": "survive"
+      },
+      "horizon": 5,
+      "labels": {
+        "up": "Failure",
+        "down": "Failure",
+        "left": "Success",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "forced_win",
+      "seed": 15572049184351291977,
+      "parameters": {
+        "opponent_health": 79,
+        "symmetry": 7,
+        "x": 3,
+        "y": 6
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 6,
+              "y": 5
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 2,
+              "head": {
+                "x": 6,
+                "y": 3
+              },
+              "body": [
+                {
+                  "x": 6,
+                  "y": 3
+                },
+                {
+                  "x": 5,
+                  "y": 3
+                },
+                {
+                  "x": 5,
+                  "y": 2
+                },
+                {
+                  "x": 4,
+                  "y": 2
+                }
+              ],
+              "length": 4
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 2,
+              "head": {
+                "x": 9,
+                "y": 9
+              },
+              "body": [
+                {
+                  "x": 9,
+                  "y": 9
+                },
+                {
+                  "x": 8,
+                  "y": 9
+                },
+                {
+                  "x": 7,
+                  "y": 9
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 2,
+          "head": {
+            "x": 6,
+            "y": 3
+          },
+          "body": [
+            {
+              "x": 6,
+              "y": 3
+            },
+            {
+              "x": 5,
+              "y": 3
+            },
+            {
+              "x": 5,
+              "y": 2
+            },
+            {
+              "x": 4,
+              "y": 2
+            }
+          ],
+          "length": 4
+        }
+      },
+      "objective": {
+        "kind": "sole_survivor"
+      },
+      "horizon": 2,
+      "labels": {
+        "up": "Success",
+        "down": "Failure",
+        "left": "Failure",
+        "right": "Failure"
+      }
+    },
+    {
+      "family": "forced_win",
+      "seed": 13158459893280737149,
+      "parameters": {
+        "opponent_health": 64,
+        "symmetry": 1,
+        "x": 4,
+        "y": 5
+      },
+      "request": {
+        "game": {
+          "id": "certification",
+          "ruleset": {
+            "name": "standard",
+            "version": "v1.2.3",
+            "settings": {
+              "foodSpawnChance": 0,
+              "minimumFood": 0,
+              "hazardDamagePerTurn": 0
+            }
+          },
+          "timeout": 500,
+          "map": "standard",
+          "source": "snake-gym"
+        },
+        "turn": 20,
+        "board": {
+          "width": 11,
+          "height": 11,
+          "food": [
+            {
+              "x": 5,
+              "y": 6
+            }
+          ],
+          "hazards": [],
+          "snakes": [
+            {
+              "id": "focal-q",
+              "name": "focal-q",
+              "health": 2,
+              "head": {
+                "x": 5,
+                "y": 4
+              },
+              "body": [
+                {
+                  "x": 5,
+                  "y": 4
+                },
+                {
+                  "x": 6,
+                  "y": 4
+                },
+                {
+                  "x": 6,
+                  "y": 3
+                }
+              ],
+              "length": 3
+            },
+            {
+              "id": "opponent-z",
+              "name": "opponent-z",
+              "health": 2,
+              "head": {
+                "x": 1,
+                "y": 9
+              },
+              "body": [
+                {
+                  "x": 1,
+                  "y": 9
+                },
+                {
+                  "x": 2,
+                  "y": 9
+                },
+                {
+                  "x": 3,
+                  "y": 9
+                }
+              ],
+              "length": 3
+            }
+          ]
+        },
+        "you": {
+          "id": "focal-q",
+          "name": "focal-q",
+          "health": 2,
+          "head": {
+            "x": 5,
+            "y": 4
+          },
+          "body": [
+            {
+              "x": 5,
+              "y": 4
+            },
+            {
+              "x": 6,
+              "y": 4
+            },
+            {
+              "x": 6,
+              "y": 3
+            }
+          ],
+          "length": 3
+        }
+      },
+      "objective": {
+        "kind": "sole_survivor"
+      },
+      "horizon": 2,
+      "labels": {
+        "up": "Success",
+        "down": "Failure",
+        "left": "Failure",
+        "right": "Failure"
+      }
+    }
+  ]
+}

@@ -21,7 +21,7 @@ docker-build TAG="latest":
         -t bene-snake:{{TAG}} \
         .
 
-# Run the Snake Gym CLI (for example: just gym tournament --games 100)
+# Certified production decisions (for example: just gym compare --a ref:main --b ref:feature --suite screening-v1)
 gym *ARGS:
     cargo run --release --package gym -- {{ARGS}}
 

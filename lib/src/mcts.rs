@@ -962,6 +962,26 @@ impl Node {
         chosen
     }
 
+    /// Select an emergency response from the guarded root and wire-acceptable moves.
+    /// Call before starting workers, while the root is idle, and retain the returned
+    /// move instead of inspecting a tree whose workers have missed their deadline.
+    /// This does not log a second tactical summary or weaken the prepared filter.
+    pub fn guarded_fallback(
+        &self,
+        you: SnakeId,
+        filter: Option<&crate::tactical::RootFilter>,
+        acceptable: [bool; 4],
+    ) -> Option<Move> {
+        self.prepare_escape_guard(you);
+        let acceptable_mask = Move::all().into_iter().fold(0u8, |mask, mv| {
+            mask | (u8::from(acceptable[mv.as_index()]) << mv.as_index())
+        });
+        let mask = self.tree_own_mask(you)?
+            & filter.map_or(u8::MAX, |filter| filter.mask)
+            & acceptable_mask;
+        self.choose_from_mask(you, mask)
+    }
+
     /// Compute the bounded tactical root filter for this board (experiment B2).
     /// Runs once per search root, sourced from this root's own board and candidate mask.
     pub fn tactical_root_filter(

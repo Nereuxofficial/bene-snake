@@ -3,6 +3,7 @@
 
 mod game_state;
 mod ponder;
+mod search;
 
 use axum::body::{Body, Bytes, HttpBody};
 use axum::response::{IntoResponse, Response};
@@ -13,8 +14,9 @@ use battlesnake_game_types::types::{Move, SnakeIDGettableGame, YouDeterminableGa
 use battlesnake_game_types::wire_representation::Game;
 use game_state::{GameState, ResponseMoves, response_moves};
 use git_version::git_version;
-use lib::mcts::{Node, SearchTreeCache, mcts_search_with_publish};
+use lib::mcts::{Node, SearchTreeCache};
 use ponder::{PendingPonder, TREE_CACHE_TTL, TreeCaches};
+use search::{PreparedSearch, SearchResult};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -187,6 +189,21 @@ async fn deploy_ready() -> axum::http::StatusCode {
 }
 
 async fn get_move(body: String) -> Response {
+    get_move_with_search(body, |search, stop, result| {
+        search.run(stop, |outcome| {
+            // Send before telemetry and destruction of the unused tree.
+            let _ = result.send(outcome);
+        });
+    })
+    .await
+}
+
+async fn get_move_with_search(
+    body: String,
+    run_search: impl FnOnce(PreparedSearch, Arc<AtomicBool>, tokio::sync::oneshot::Sender<SearchResult>)
+    + Send
+    + 'static,
+) -> Response {
     let start = std::time::Instant::now();
     // Decoding only normalises the request and records it; the tree is untouched, so it
     // can happen before admission without racing the previous turn's search.
@@ -218,30 +235,13 @@ async fn get_move(body: String) -> Response {
         return Json(json!({"move": fallback})).into_response();
     };
     let carried_visits = root_node.visits();
-    // Tactical root filter (B2): computed once before the search worker starts, so its cost
-    // is inside the move deadline via `start.elapsed()` below. A panic or budget exhaustion
-    // yields `None`, which reproduces the unfiltered selection. Two-to-four complete turns
-    // within a 2 ms / 2,000-call ceiling; these are measured bounds, not validated constants.
-    let tactical_filter = catch_unwind(AssertUnwindSafe(|| {
-        let limits = lib::tactical::Limits {
-            start_horizon: 2,
-            max_horizon: 4,
-            max_simulator_calls: 2_000,
-            deadline: Some(Instant::now() + Duration::from_millis(2)),
-            stop: None,
-        };
-        root_node.tactical_root_filter(you, &limits)
-    }))
-    .ok();
+    let search = PreparedSearch::new(root_node, you, &decoded.response_moves);
+    let fallback = search.fallback();
     let stop = StopSearch(Arc::new(AtomicBool::new(false)));
     let stop_for_search = Arc::clone(&stop.0);
     let game_id = decoded.game_id.clone();
     let turn = decoded.turn;
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    let worker_moves = ResponseMoves {
-        fallback,
-        acceptable: decoded.response_moves.acceptable,
-    };
     // The admitted handler already holds the per-game lock; this pause only has to outlive
     // the handler future, which may end while the worker is still stopping.
     let worker_foreground = tree_caches().pause();
@@ -249,15 +249,7 @@ async fn get_move(body: String) -> Response {
         // A cancelled handler may return while its foreground workers are stopping.
         let _foreground = worker_foreground;
         let _span = tracing::info_span!("search", game_id = %game_id, turn).entered();
-        mcts_search_with_publish(root_node.clone(), &you, stop_for_search, || {
-            // Only this worker reads its tree, after successful search completion.
-            let result = validated_search_result(true, &worker_moves, || {
-                let chosen = root_node.best_move_with_root_filter(you, tactical_filter.as_ref())?;
-                Some((chosen, SearchTreeCache::after_move(&root_node, you, chosen)))
-            });
-            // The handler need not wait for telemetry or destruction of the unused tree.
-            let _ = result_tx.send(result);
-        });
+        run_search(search, stop_for_search, result_tx);
     });
     let budget = search_budget(decoded.timeout_ms, start.elapsed());
     // Short deadlines retain the same delivery cushion.
@@ -346,20 +338,6 @@ impl Drop for PonderResponse {
             tree_caches().response_sent(pending);
         }
     }
-}
-
-fn validated_search_result(
-    worker_finished: bool,
-    moves: &ResponseMoves,
-    publish: impl FnOnce() -> Option<(Move, SearchTreeCache)>,
-) -> Option<(Move, SearchTreeCache)> {
-    if !worker_finished {
-        return None;
-    }
-    catch_unwind(AssertUnwindSafe(publish))
-        .ok()
-        .flatten()
-        .filter(|(chosen, _)| moves.acceptable[chosen.as_index()])
 }
 
 async fn wait_for_search<T>(
@@ -463,6 +441,53 @@ async fn main() -> color_eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::validated_search_result;
+
+    #[tokio::test]
+    async fn turn141_worker_failures_return_the_guarded_escape() {
+        // Missing, invalid, and late publication must all use the move prepared
+        // while the root was idle, without reading the worker's tree afterward.
+        for failure in 0..3 {
+            let mut game: Game =
+                serde_json::from_str(include_str!("fixtures/68adaa6a-turn141.json")).unwrap();
+            game.game.id = format!("guarded-turn141-failure-{failure}");
+            let wire_moves = response_moves(&game);
+            assert_eq!(wire_moves.fallback, Move::Left);
+            assert!(wire_moves.acceptable[Move::Right.as_index()]);
+            let body = serde_json::to_string(&game).unwrap();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let response = get_move_with_search(body.clone(), move |search, _, result| {
+                assert_eq!(search.fallback(), Move::Right);
+                match failure {
+                    0 => drop(result), // Worker exited without publishing.
+                    1 => {
+                        let _ = result.send(None);
+                    } // Invalid publication.
+                    _ => {
+                        // Keep both the tree and sender alive beyond the handler's
+                        // deadline. The handler must return without either.
+                        let _ = release_rx.recv();
+                        drop(result);
+                    }
+                }
+            })
+            .await;
+            // Release the fake worker before assertions so a failure cannot leave
+            // the Tokio runtime waiting forever for a blocked spawn_blocking job.
+            let _ = release_tx.send(());
+            assert_eq!(
+                response.headers()[axum::http::header::CONTENT_TYPE],
+                "application/json"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["move"], "right", "worker failure mode {failure}");
+            assert!(tree_caches().take(&game.game.id).is_none());
+            end(body).await;
+        }
+    }
 
     async fn move_json(body: String) -> Value {
         let response = get_move(body).await;

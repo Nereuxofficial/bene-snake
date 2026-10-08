@@ -1,344 +1,294 @@
+//! Paired base-cluster scores and seeded within-family clustered bootstrap.
+use crate::{artifact::Rng, schema::*};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-
-/// Result of a single game
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GameResult {
-    /// Index of the winning agent, or None if it was a draw
-    pub winner: Option<usize>,
-    /// Number of turns the game lasted
-    pub turns: u32,
-    /// Number of snakes in the game
-    pub num_snakes: usize,
+use std::collections::{BTreeMap, HashMap, HashSet};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FamilyScore {
+    pub clusters: usize,
+    pub cases: usize,
+    pub accuracy_a: Option<f64>,
+    pub accuracy_b: Option<f64>,
+    pub delta: Option<f64>,
 }
-
-/// Aggregated statistics for an agent
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AgentStats {
-    pub name: String,
-    pub wins: u32,
-    pub losses: u32,
-    pub draws: u32,
-    pub total_games: u32,
-    pub total_turns: u64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateMetrics {
+    pub attempts: usize,
+    pub passed: usize,
+    pub statuses: BTreeMap<String, usize>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p95_ms: Option<f64>,
+    pub startup_p50_ms: Option<f64>,
 }
-
-impl AgentStats {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            ..Default::default()
-        }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub schema: u32,
+    pub status: String,
+    pub planned_attempts: usize,
+    pub recorded_attempts: usize,
+    pub complete_cases: usize,
+    pub independent_clusters: usize,
+    pub accuracy_a: Option<f64>,
+    pub accuracy_b: Option<f64>,
+    pub delta: Option<f64>,
+    pub interval: Option<[f64; 2]>,
+    pub interval_method: String,
+    pub bootstrap_seed: u64,
+    pub threshold: f64,
+    pub verdict: String,
+    pub families: BTreeMap<String, FamilyScore>,
+    pub candidates: [CandidateMetrics; 2],
+    pub trial_pairs: BTreeMap<String, usize>,
+    pub unique_success_accuracy: [Option<f64>; 2],
+    pub interruption_gaps: Vec<String>,
+    pub measured_move_ms: f64,
+    pub measured_startup_ms: f64,
+}
+pub fn passed(a: &Attempt, c: &Case) -> bool {
+    a.status == Status::Valid
+        && a.latency_ms <= a.deadline_ms as f64
+        && a.chosen.is_some_and(|m| c.labels.get(m) == Label::Success)
+}
+fn quantile(mut v: Vec<f64>, q: f64) -> Option<f64> {
+    if v.is_empty() {
+        return None;
     }
-
-    pub fn win_rate(&self) -> f64 {
-        if self.total_games == 0 {
-            0.0
-        } else {
-            self.wins as f64 / self.total_games as f64
-        }
-    }
-
-    pub fn avg_game_length(&self) -> f64 {
-        if self.total_games == 0 {
-            0.0
-        } else {
-            self.total_turns as f64 / self.total_games as f64
-        }
-    }
+    v.sort_by(f64::total_cmp);
+    Some(v[((v.len() - 1) as f64 * q).round() as usize])
 }
-
-/// Tournament statistics
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TournamentStats {
-    pub agent_stats: Vec<AgentStats>,
-    pub total_games: u32,
-    pub total_draws: u32,
-    pub avg_game_length: f64,
-    pub min_game_length: u32,
-    pub max_game_length: u32,
-}
-
-impl TournamentStats {
-    /// Compute statistics from game results
-    pub fn from_results(results: &[GameResult], agent_names: &[String]) -> Self {
-        let mut agent_stats: Vec<AgentStats> = agent_names
-            .iter()
-            .map(|name| AgentStats::new(name.clone()))
-            .collect();
-
-        let mut total_draws = 0u32;
-        let mut min_length = u32::MAX;
-        let mut max_length = 0u32;
-        let mut total_turns = 0u64;
-
-        for result in results {
-            total_turns += result.turns as u64;
-            min_length = min_length.min(result.turns);
-            max_length = max_length.max(result.turns);
-
-            match result.winner {
-                Some(winner_idx) if winner_idx < agent_stats.len() => {
-                    // Update winner
-                    agent_stats[winner_idx].wins += 1;
-                    agent_stats[winner_idx].total_games += 1;
-                    agent_stats[winner_idx].total_turns += result.turns as u64;
-
-                    // Update losers
-                    for (i, stats) in agent_stats.iter_mut().enumerate() {
-                        if i != winner_idx && i < result.num_snakes {
-                            stats.losses += 1;
-                            stats.total_games += 1;
-                            stats.total_turns += result.turns as u64;
-                        }
-                    }
-                }
-                _ => {
-                    // Draw - all participants get a draw
-                    total_draws += 1;
-                    for (i, stats) in agent_stats.iter_mut().enumerate() {
-                        if i < result.num_snakes {
-                            stats.draws += 1;
-                            stats.total_games += 1;
-                            stats.total_turns += result.turns as u64;
-                        }
-                    }
-                }
+pub fn summarize(
+    m: &Manifest,
+    cases: &[Case],
+    attempts: &[Attempt],
+    run_status: &str,
+    gaps: Vec<String>,
+    seed: u64,
+) -> Result<Summary> {
+    ensure!(m.schema == SCHEMA && m.repeats > 0, "invalid manifest");
+    let mut seen = HashSet::new();
+    let by_case: HashMap<_, _> = cases.iter().map(|c| (c.id.as_str(), c)).collect();
+    let mut rows = HashMap::new();
+    for a in attempts {
+        ensure!(
+            a.schema == SCHEMA
+                && a.run_id == m.run_id
+                && a.candidate < 2
+                && a.repeat < m.repeats
+                && by_case.contains_key(a.case_id.as_str())
+                && a.binary_hash == m.candidates[a.candidate].binary_hash
+                && a.deadline_ms == m.timeout_ms,
+            "attempt contract mismatch"
+        );
+        ensure!(
+            seen.insert((&a.case_id, a.repeat, a.candidate)),
+            "duplicate attempt key"
+        );
+        ensure!(
+            a.latency_ms.is_finite()
+                && a.latency_ms >= 0.0
+                && a.startup_ms.is_finite()
+                && a.startup_ms >= 0.0,
+            "invalid latency"
+        );
+        rows.insert((a.case_id.as_str(), a.repeat, a.candidate), a);
+    }
+    let mut family_clusters = BTreeMap::<String, BTreeMap<String, Vec<[f64; 2]>>>::new();
+    for family in &m.suite.families {
+        family_clusters.insert(family.clone(), BTreeMap::new());
+    }
+    let mut complete_cases = 0;
+    let mut unique = [vec![], vec![]];
+    let mut pairs = BTreeMap::from([
+        ("both_pass".into(), 0),
+        ("both_fail".into(), 0),
+        ("a_only".into(), 0),
+        ("b_only".into(), 0),
+    ]);
+    for c in cases {
+        let complete =
+            (0..m.repeats).all(|r| (0..2).all(|a| rows.contains_key(&(c.id.as_str(), r, a))));
+        for r in 0..m.repeats {
+            if let (Some(a), Some(b)) = (
+                rows.get(&(c.id.as_str(), r, 0)),
+                rows.get(&(c.id.as_str(), r, 1)),
+            ) {
+                let key = match (passed(a, c), passed(b, c)) {
+                    (true, true) => "both_pass",
+                    (false, false) => "both_fail",
+                    (true, false) => "a_only",
+                    (false, true) => "b_only",
+                };
+                *pairs.get_mut(key).unwrap() += 1;
             }
         }
-
-        let total_games = results.len() as u32;
-        let avg_game_length = if total_games > 0 {
-            total_turns as f64 / total_games as f64
-        } else {
-            0.0
-        };
-
-        Self {
-            agent_stats,
-            total_games,
-            total_draws,
-            avg_game_length,
-            min_game_length: if min_length == u32::MAX {
-                0
-            } else {
-                min_length
-            },
-            max_game_length: max_length,
+        if !complete {
+            continue;
+        }
+        complete_cases += 1;
+        let score = std::array::from_fn(|a| {
+            (0..m.repeats)
+                .map(|r| passed(rows[&(c.id.as_str(), r, a)], c) as u8 as f64)
+                .sum::<f64>()
+                / m.repeats as f64
+        });
+        family_clusters
+            .get_mut(&c.family)
+            .ok_or_else(|| anyhow::anyhow!("undeclared family"))?
+            .entry(c.cluster.clone())
+            .or_default()
+            .push(score);
+        if c.labels.successes().len() == 1 {
+            for a in 0..2 {
+                unique[a].push(score[a]);
+            }
         }
     }
-
-    /// Print a formatted summary table
-    pub fn print_summary(&self) {
-        use colored::Colorize;
-        use tabled::{Table, Tabled};
-
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Agent")]
-            name: String,
-            #[tabled(rename = "Wins")]
-            wins: u32,
-            #[tabled(rename = "Losses")]
-            losses: u32,
-            #[tabled(rename = "Draws")]
-            draws: u32,
-            #[tabled(rename = "Win Rate")]
-            win_rate: String,
-            #[tabled(rename = "Avg Length")]
-            avg_length: String,
-        }
-
-        let rows: Vec<Row> = self
-            .agent_stats
-            .iter()
-            .map(|s| Row {
-                name: s.name.clone(),
-                wins: s.wins,
-                losses: s.losses,
-                draws: s.draws,
-                win_rate: format!("{:.1}%", s.win_rate() * 100.0),
-                avg_length: format!("{:.1}", s.avg_game_length()),
+    let mut families = BTreeMap::new();
+    let mut points = vec![];
+    let mut all_a = vec![];
+    let mut all_b = vec![];
+    let mut independent = 0;
+    for (family, clusters) in family_clusters {
+        let data = clusters
+            .values()
+            .map(|positions| {
+                [
+                    positions.iter().map(|s| s[0]).sum::<f64>() / positions.len() as f64,
+                    positions.iter().map(|s| s[1]).sum::<f64>() / positions.len() as f64,
+                ]
             })
-            .collect();
-
-        let table = Table::new(rows).to_string();
-
-        println!("\n{}", "=== Tournament Results ===".green().bold());
-        println!("{}", table);
-        println!();
-        println!(
-            "Total games: {} | Draws: {} | Avg length: {:.1} turns",
-            self.total_games.to_string().cyan(),
-            self.total_draws.to_string().yellow(),
-            self.avg_game_length
+            .collect::<Vec<_>>();
+        let n = data.len();
+        independent += n;
+        let a = (n > 0).then(|| data.iter().map(|s| s[0]).sum::<f64>() / n as f64);
+        let b = (n > 0).then(|| data.iter().map(|s| s[1]).sum::<f64>() / n as f64);
+        if let (Some(a), Some(b)) = (a, b) {
+            all_a.push(a);
+            all_b.push(b);
+        }
+        families.insert(
+            family,
+            FamilyScore {
+                clusters: n,
+                cases: clusters.values().map(Vec::len).sum(),
+                accuracy_a: a,
+                accuracy_b: b,
+                delta: a.zip(b).map(|(a, b)| b - a),
+            },
         );
-        println!(
-            "Game length range: {} - {} turns",
-            self.min_game_length.to_string().cyan(),
-            self.max_game_length.to_string().cyan()
-        );
+        points.push(data);
     }
-
-    /// Export stats to JSON
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
-    }
-}
-
-/// Head-to-head comparison between two agents
-#[derive(Clone, Debug)]
-pub struct HeadToHeadStats {
-    pub agent1_name: String,
-    pub agent2_name: String,
-    pub agent1_wins: u32,
-    pub agent2_wins: u32,
-    pub draws: u32,
-}
-
-impl HeadToHeadStats {
-    pub fn from_results(results: &[GameResult], agent1_name: &str, agent2_name: &str) -> Self {
-        let mut agent1_wins = 0;
-        let mut agent2_wins = 0;
-        let mut draws = 0;
-
-        for result in results {
-            match result.winner {
-                Some(0) => agent1_wins += 1,
-                Some(1) => agent2_wins += 1,
-                // `None` covers both genuine mutual elimination and games that
-                // hit the turn cap with more than one survivor. Both are draws
-                // for scoring purposes.
-                _ => draws += 1,
+    let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
+    let accuracy_a = (all_a.len() == points.len())
+        .then(|| mean(&all_a))
+        .flatten();
+    let accuracy_b = (all_b.len() == points.len())
+        .then(|| mean(&all_b))
+        .flatten();
+    let delta = accuracy_a.zip(accuracy_b).map(|(a, b)| b - a);
+    let complete = complete_cases == cases.len()
+        && attempts.len() == cases.len() * m.repeats * 2
+        && run_status == "complete";
+    let inference = complete
+        && points
+            .iter()
+            .all(|f| f.len() >= m.suite.min_clusters_per_family)
+        && m.suite.bootstrap_samples >= 1000;
+    let interval = if inference {
+        let mut rng = Rng(seed);
+        let mut bootstrap = vec![];
+        for _ in 0..m.suite.bootstrap_samples {
+            let mut total = 0.0;
+            for f in &points {
+                let mut sum = 0.0;
+                for _ in 0..f.len() {
+                    let s = f[rng.range(f.len())];
+                    sum += s[1] - s[0];
+                }
+                total += sum / f.len() as f64;
             }
+            bootstrap.push(total / points.len() as f64);
         }
-
-        Self {
-            agent1_name: agent1_name.to_string(),
-            agent2_name: agent2_name.to_string(),
-            agent1_wins,
-            agent2_wins,
-            draws,
+        bootstrap.sort_by(f64::total_cmp);
+        Some([
+            bootstrap[((bootstrap.len() - 1) as f64 * 0.025).round() as usize],
+            bootstrap[((bootstrap.len() - 1) as f64 * 0.975).round() as usize],
+        ])
+    } else {
+        None
+    };
+    let verdict = match interval {
+        Some([lo, _]) if lo > m.suite.threshold => "B better on this suite",
+        Some([_, hi]) if hi < -m.suite.threshold => "A better on this suite",
+        Some(_) => "inconclusive",
+        None => "inference unavailable",
+    }
+    .into();
+    let candidates = std::array::from_fn(|candidate| {
+        let v = attempts
+            .iter()
+            .filter(|a| a.candidate == candidate)
+            .collect::<Vec<_>>();
+        let mut statuses = BTreeMap::new();
+        for a in &v {
+            *statuses
+                .entry(
+                    serde_json::to_value(a.status)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                )
+                .or_default() += 1;
         }
-    }
-
-    /// Total number of games that contributed to this comparison.
-    pub fn total_games(&self) -> u32 {
-        self.agent1_wins + self.agent2_wins + self.draws
-    }
-
-    /// Fraction of games won outright. Draws are in the denominator, so this is
-    /// a win rate, not a score.
-    pub fn win_rate(&self, wins: u32) -> f64 {
-        let total = self.total_games();
-        if total == 0 {
-            0.0
+        let latencies = v
+            .iter()
+            .filter(|a| a.status != Status::StartupFailure)
+            .map(|a| a.latency_ms)
+            .collect::<Vec<_>>();
+        CandidateMetrics {
+            attempts: v.len(),
+            passed: v
+                .iter()
+                .filter(|a| passed(a, by_case[a.case_id.as_str()]))
+                .count(),
+            statuses,
+            latency_p50_ms: quantile(latencies.clone(), 0.5),
+            latency_p95_ms: quantile(latencies, 0.95),
+            startup_p50_ms: quantile(v.iter().map(|a| a.startup_ms).collect(), 0.5),
+        }
+    });
+    Ok(Summary {
+        schema: SCHEMA,
+        status: if run_status == "invalid" {
+            "invalid"
+        } else if complete {
+            "complete"
         } else {
-            wins as f64 / total as f64
+            "interrupted"
         }
-    }
-
-    /// Game score with a draw worth half a point, the standard expectation for
-    /// an even game. This does not reward or punish turn-cap draws as wins.
-    pub fn score(&self, wins: u32) -> f64 {
-        let total = self.total_games();
-        if total == 0 {
-            0.0
-        } else {
-            (wins as f64 + self.draws as f64 / 2.0) / total as f64
-        }
-    }
-
-    pub fn print_summary(&self) {
-        use colored::Colorize;
-
-        println!("\n{}", "=== Head-to-Head Results ===".green().bold());
-        println!(
-            "{}: {} wins ({:.1}% win, {:.1}% score)",
-            self.agent1_name.cyan(),
-            self.agent1_wins,
-            self.win_rate(self.agent1_wins) * 100.0,
-            self.score(self.agent1_wins) * 100.0
-        );
-        println!(
-            "{}: {} wins ({:.1}% win, {:.1}% score)",
-            self.agent2_name.cyan(),
-            self.agent2_wins,
-            self.win_rate(self.agent2_wins) * 100.0,
-            self.score(self.agent2_wins) * 100.0
-        );
-        println!(
-            "Draws: {} of {} games",
-            self.draws.to_string().yellow(),
-            self.total_games()
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn result(winner: Option<usize>, turns: u32, num_snakes: usize) -> GameResult {
-        GameResult {
-            winner,
-            turns,
-            num_snakes,
-        }
-    }
-
-    #[test]
-    fn head_to_head_counts_win_loss_and_draw() {
-        let results = [
-            result(Some(0), 10, 2),
-            result(Some(1), 20, 2),
-            result(None, 30, 2),
-            result(None, 40, 2),
-        ];
-        let h2h = HeadToHeadStats::from_results(&results, "a", "b");
-
-        assert_eq!(h2h.agent1_wins, 1);
-        assert_eq!(h2h.agent2_wins, 1);
-        assert_eq!(h2h.draws, 2);
-        assert_eq!(h2h.total_games(), 4);
-        assert!((h2h.win_rate(1) - 0.25).abs() < 1e-9);
-        // One win plus two half-point draws out of four games.
-        assert!((h2h.score(1) - 0.5).abs() < 1e-9);
-        assert!((h2h.score(0) - 0.25).abs() < 1e-9);
-    }
-
-    #[test]
-    fn head_to_head_winner_outside_two_seats_is_a_draw_not_a_misattributed_win() {
-        // A four-snake result has no meaning in a two-agent comparison.
-        let results = [result(Some(2), 15, 4)];
-        let h2h = HeadToHeadStats::from_results(&results, "a", "b");
-        assert_eq!(h2h.agent1_wins, 0);
-        assert_eq!(h2h.agent2_wins, 0);
-        assert_eq!(h2h.draws, 1);
-    }
-
-    #[test]
-    fn head_to_head_empty_results_do_not_divide_by_zero() {
-        let h2h = HeadToHeadStats::from_results(&[], "a", "b");
-        assert_eq!(h2h.total_games(), 0);
-        assert_eq!(h2h.win_rate(0), 0.0);
-        assert_eq!(h2h.score(0), 0.0);
-    }
-
-    #[test]
-    fn tournament_credits_all_survivors_of_a_turn_cap_draw() {
-        let results = [result(None, 100, 4), result(Some(0), 50, 4)];
-        let names = ["a", "b", "c", "d"].map(String::from);
-        let stats = TournamentStats::from_results(&results, &names);
-
-        assert_eq!(stats.total_games, 2);
-        assert_eq!(stats.total_draws, 1);
-        for (i, agent) in stats.agent_stats.iter().enumerate() {
-            assert_eq!(agent.total_games, 2, "agent {i} should play both games");
-            assert_eq!(agent.draws, 1);
-        }
-        assert_eq!(stats.agent_stats[0].wins, 1);
-        assert_eq!(stats.agent_stats[1].losses, 1);
-        assert_eq!(stats.agent_stats[2].losses, 1);
-        assert_eq!(stats.agent_stats[3].losses, 1);
-    }
+        .into(),
+        planned_attempts: cases.len() * m.repeats * 2,
+        recorded_attempts: attempts.len(),
+        complete_cases,
+        independent_clusters: independent,
+        accuracy_a,
+        accuracy_b,
+        delta,
+        interval,
+        interval_method: format!(
+            "95% paired base-cluster bootstrap within families; {} replicates; equal family weights; minimum {} clusters/family",
+            m.suite.bootstrap_samples, m.suite.min_clusters_per_family
+        ),
+        bootstrap_seed: seed,
+        threshold: m.suite.threshold,
+        verdict,
+        families,
+        candidates,
+        trial_pairs: pairs,
+        unique_success_accuracy: [mean(&unique[0]), mean(&unique[1])],
+        interruption_gaps: gaps,
+        measured_move_ms: attempts.iter().map(|a| a.latency_ms).sum(),
+        measured_startup_ms: attempts.iter().map(|a| a.startup_ms).sum(),
+    })
 }

@@ -1,655 +1,198 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-
-use clap::{Parser, Subcommand, ValueEnum};
-use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
-
-use gym::{agents, runner, stats};
-
-use agents::{
-    HeuristicAgent, HeuristicPolicy, MctsAgent, MinimaxAgent, MinimaxPolicy, RandomAgent,
-};
-use gym::viewer::{self, ReplayStore};
-use lib::Agent;
-use runner::{GameConfig, run_game, run_game_seeded};
-use stats::{HeadToHeadStats, TournamentStats};
-
+use anyhow::{Result, ensure};
+use clap::{Parser, Subcommand};
+use gym::{artifact::*, generate, report, runner};
+use std::{io::Read, net::SocketAddr, path::PathBuf};
 #[derive(Parser)]
-#[command(name = "snake-gym")]
-#[command(about = "Benchmarking gym for pitting bene-snake against other snake implementations")]
-#[command(version)]
+#[command(
+    name = "snake-gym",
+    version,
+    about = "Certified paired production decision benchmark (synthetic, no future food, cold trees)"
+)]
 struct Cli {
-    /// Serve the live viewer and record completed games
-    #[arg(long, global = true)]
-    web: bool,
-
-    /// Address for the browser viewer
-    #[arg(long, global = true, default_value = "127.0.0.1:8050")]
-    web_bind: SocketAddr,
-
-    /// Directory containing saved game replays
-    #[arg(long, global = true, default_value = "gym-replays")]
-    replay_dir: PathBuf,
-
-    /// Pause after each published turn for easier live viewing (requires --web)
-    #[arg(long, global = true, default_value = "0", requires = "web")]
-    turn_delay: u64,
-
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
-
 #[derive(Subcommand)]
-enum Commands {
-    /// Browse recorded games without starting new games
-    Serve,
-
-    /// Run a tournament between multiple agents
-    Tournament {
-        /// Number of games to run
-        #[arg(short, long, default_value = "100")]
-        games: usize,
-
-        /// Agents to include in the tournament
-        #[arg(
-            short,
-            long,
-            value_delimiter = ',',
-            default_value = "mcts,random,heuristic"
-        )]
-        agents: Vec<AgentType>,
-
-        /// MCTS think time in milliseconds
-        #[arg(long, default_value = "50")]
-        mcts_time: u64,
-
-        /// Minimax search depth
-        #[arg(long, default_value = "3")]
-        minimax_depth: u32,
-
-        /// Maximum turns per game
-        #[arg(long, default_value = "500")]
-        max_turns: u32,
-
-        /// Run games in parallel
-        #[arg(short, long)]
-        parallel: bool,
-
-        /// Output results as JSON
+enum Command {
+    /// Freeze a fresh certified corpus, then compare two production HTTP candidates
+    Compare {
         #[arg(long)]
-        json: bool,
-    },
-
-    /// Run a head-to-head duel between two agents
-    Duel {
-        /// First agent
-        #[arg(short = '1', long, default_value = "mcts")]
-        agent1: AgentType,
-
-        /// Second agent
-        #[arg(short = '2', long, default_value = "random")]
-        agent2: AgentType,
-
-        /// Number of games to run
-        #[arg(short, long, default_value = "100")]
-        games: usize,
-
-        /// MCTS think time in milliseconds
-        #[arg(long, default_value = "50")]
-        mcts_time: u64,
-
-        /// Minimax search depth
-        #[arg(long, default_value = "3")]
-        minimax_depth: u32,
-
-        /// Maximum turns per game
-        #[arg(long, default_value = "500")]
-        max_turns: u32,
-
-        /// Run games in parallel
-        #[arg(short, long)]
-        parallel: bool,
-
-        /// Output results as JSON
+        a: String,
         #[arg(long)]
-        json: bool,
-
-        /// Reuse the same starting boards across benchmark runs
+        b: String,
+        #[arg(long)]
+        corpus: Option<PathBuf>,
+        #[arg(long)]
+        suite: Option<String>,
+        #[arg(long)]
+        cases: Option<usize>,
         #[arg(long)]
         seed: Option<u64>,
+        #[arg(long)]
+        repeats: Option<usize>,
+        #[arg(long, default_value_t = 500)]
+        timeout_ms: u64,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
-
-    /// Run a quick benchmark to test performance
-    Benchmark {
-        /// Number of games to run
-        #[arg(short, long, default_value = "10")]
-        games: usize,
-
-        /// MCTS think times to test (in ms)
-        #[arg(long, value_delimiter = ',', default_value = "10,25,50,100")]
-        mcts_times: Vec<u64>,
-
-        /// Run games in parallel
-        #[arg(short, long)]
-        parallel: bool,
+    /// Generate/certify positions without consulting candidates
+    Generate {
+        #[arg(long, default_value = "balanced-v1")]
+        suite: String,
+        #[arg(long, default_value_t = 240)]
+        cases: usize,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        out: PathBuf,
     },
+    /// Resume the saved schedule; verify all immutable identities first
+    Resume { run: PathBuf },
+    /// Rebuild summary and offline report from saved records
+    Report { run: PathBuf },
+    /// Serve a read-only report on loopback
+    Serve {
+        run: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8050")]
+        bind: SocketAddr,
+    },
+    /// Inspect a case's wire request, assumptions and certified labels
+    Inspect {
+        run: PathBuf,
+        #[arg(long)]
+        case: String,
+    },
+    /// Reconstruct every label from full certificates
+    VerifyCorpus { corpus: PathBuf },
 }
-
-#[derive(Clone, Copy, ValueEnum, Debug, PartialEq)]
-enum AgentType {
-    Mcts,
-    Random,
-    Heuristic,
-    /// The pre-tactical heuristic, kept so the corrected policy can be compared
-    /// against it directly in deterministic seeded duels.
-    HeuristicLegacy,
-    Minimax,
-    /// The pre-paranoid minimax, kept so the search fix can be compared against
-    /// it directly in deterministic seeded duels.
-    MinimaxLegacy,
-}
-
-impl AgentType {
-    fn create_agent(&self, mcts_time_ms: u64, minimax_depth: u32) -> Box<dyn Agent> {
-        match self {
-            AgentType::Mcts => Box::new(MctsAgent::new(Duration::from_millis(mcts_time_ms))),
-            AgentType::Random => Box::new(RandomAgent::new()),
-            AgentType::Heuristic => Box::new(HeuristicAgent::new()),
-            AgentType::HeuristicLegacy => Box::new(HeuristicAgent::with_policy(
-                "Heuristic-legacy",
-                HeuristicPolicy::Legacy,
-            )),
-            AgentType::Minimax => Box::new(MinimaxAgent::new(minimax_depth)),
-            AgentType::MinimaxLegacy => Box::new(MinimaxAgent::with_policy(
-                "Minimax-legacy",
-                minimax_depth,
-                MinimaxPolicy::Legacy,
-            )),
-        }
+fn seed(value: Option<u64>) -> Result<u64> {
+    if let Some(v) = value {
+        return Ok(v);
     }
+    let mut bytes = [0; 8];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
 }
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    if !cli.web && !matches!(cli.command, Commands::Serve) {
-        execute(cli.command, None);
-        return Ok(());
-    }
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?
-        .block_on(run_viewer(cli))
-}
-
-async fn run_viewer(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let store = ReplayStore::open(cli.replay_dir, Duration::from_millis(cli.turn_delay))?;
-    let listener = tokio::net::TcpListener::bind(cli.web_bind).await?;
-    eprintln!(
-        "Gym viewer: http://{} ({} saved games)",
-        listener.local_addr()?,
-        store.summaries().len()
+fn finish(out: &std::path::Path) -> Result<()> {
+    let path = report::export(out)?;
+    let s = runner::summary(out)?;
+    println!(
+        "{}: A={:?}, B={:?}, delta={:?}; {}",
+        s.status, s.accuracy_a, s.accuracy_b, s.delta, s.verdict
     );
-    eprintln!("The viewer stays open when games finish. Press Ctrl-C to stop.");
-    let server =
-        tokio::spawn(axum::serve(listener, viewer::router(Arc::clone(&store))).into_future());
-    let mut worker = tokio::task::spawn_blocking(move || execute(cli.command, Some(&store)));
-    tokio::select! {
-        result = &mut worker => {
-            result?;
-            tokio::select! {
-                result = server => { result??; }
-                result = tokio::signal::ctrl_c() => { result?; }
-            }
+    println!(
+        "Cold production decisions; synthetic distribution; no future food; adversarial coalition."
+    );
+    println!("Report: {}", path.canonicalize()?.display());
+    println!(
+        "Rebuild: {} report {}",
+        out.join("binaries/snake-gym").display(),
+        out.display()
+    );
+    println!(
+        "Resume: {} resume {}",
+        out.join("binaries/snake-gym").display(),
+        out.display()
+    );
+    Ok(())
+}
+#[tokio::main]
+async fn main() -> Result<()> {
+    match Cli::parse().command {
+        Command::Generate {
+            suite,
+            cases,
+            seed: value,
+            out,
+        } => {
+            let seed = seed(value)?;
+            println!("Seed: {seed}");
+            let g = generate::generate(&out, generate::suite(&suite)?, cases, seed)?;
+            println!(
+                "Corpus: {}; complete={}; {} ms",
+                out.canonicalize()?.display(),
+                g.complete,
+                g.elapsed_ms
+            );
+            ensure!(g.complete, "quota shortage; inspect generation.json");
         }
-        result = tokio::signal::ctrl_c() => {
+        Command::Compare {
+            a,
+            b,
+            corpus,
+            suite,
+            cases,
+            seed: value,
+            repeats,
+            timeout_ms,
+            out,
+        } => {
+            ensure!(
+                corpus.is_none() || suite.is_none() && cases.is_none() && value.is_none(),
+                "--corpus conflicts with --suite/--cases/--seed"
+            );
+            let suite_name = suite.as_deref().unwrap_or("balanced-v1");
+            let screening = suite_name == "screening-v1";
+            let hard = suite_name == "hard-v1" || suite_name == "hard-confirmation-v1";
+            let repeats = repeats.unwrap_or(if screening { 1 } else { 3 });
+            let out = out.unwrap_or_else(|| PathBuf::from(format!("gym-runs/{}", timestamp())));
+            ensure!(
+                !out.join("manifest.json").exists(),
+                "run already exists; use resume"
+            );
+            std::fs::create_dir_all(&out)?;
+            let out = out.canonicalize()?;
+            if let Some(corpus) = corpus {
+                runner::freeze_corpus(&corpus, &out)?;
+            } else {
+                let seed = seed(value)?;
+                println!("Seed: {seed}");
+                let g = generate::generate(
+                    &out,
+                    generate::suite(suite_name)?,
+                    cases.unwrap_or(if screening || hard { 60 } else { 240 }),
+                    seed,
+                )?;
+                ensure!(g.complete, "quota shortage; candidates were not consulted");
+            }
+            println!(
+                "Request allowance: {:.1}s plus startup, builds and cleanup",
+                generate::load(&out)?.1.len() as f64 * repeats as f64 * 2.0 * timeout_ms as f64
+                    / 1000.0
+            );
+            runner::initialize(&std::env::current_dir()?, &out, &a, &b, repeats, timeout_ms)?;
+            let result = runner::execute(&out, false).await;
+            let exported = finish(&out);
             result?;
-            // Blocking agent searches cannot be cancelled by dropping a task.
-            // Completed replays are already on disk; exit promptly on Ctrl-C.
-            std::process::exit(0);
+            exported?;
+        }
+        Command::Resume { run } => {
+            let out = run.canonicalize()?;
+            let result = runner::execute(&out, true).await;
+            let exported = finish(&out);
+            result?;
+            exported?;
+        }
+        Command::Report { run } => finish(&run)?,
+        Command::Serve { run, bind } => report::serve(&run, bind).await?,
+        Command::Inspect { run, case } => {
+            let (_, cases) = generate::load(&run)?;
+            let c = cases
+                .iter()
+                .find(|c| c.id == case)
+                .ok_or_else(|| anyhow::anyhow!("unknown case"))?;
+            println!("{}", serde_json::to_string_pretty(c)?);
+        }
+        Command::VerifyCorpus { corpus } => {
+            let (g, cases) = generate::load(&corpus)?;
+            println!(
+                "Verified {} certificates; complete={}; seed={}",
+                cases.len(),
+                g.complete,
+                g.seed
+            );
+            ensure!(g.complete, "incomplete quotas");
         }
     }
     Ok(())
-}
-
-fn execute(command: Commands, viewer: Option<&Arc<ReplayStore>>) {
-    match command {
-        Commands::Serve => {}
-        Commands::Tournament {
-            games,
-            agents,
-            mcts_time,
-            minimax_depth,
-            max_turns,
-            parallel,
-            json,
-        } => {
-            run_tournament_cmd(
-                games,
-                &agents,
-                RunOptions {
-                    mcts_time,
-                    minimax_depth,
-                    max_turns,
-                    parallel,
-                    json_output: json,
-                    viewer,
-                },
-            );
-        }
-        Commands::Duel {
-            agent1,
-            agent2,
-            games,
-            mcts_time,
-            minimax_depth,
-            max_turns,
-            parallel,
-            json,
-            seed,
-        } => {
-            run_duel_cmd(
-                agent1,
-                agent2,
-                games,
-                seed,
-                RunOptions {
-                    mcts_time,
-                    minimax_depth,
-                    max_turns,
-                    parallel,
-                    json_output: json,
-                    viewer,
-                },
-            );
-        }
-        Commands::Benchmark {
-            games,
-            mcts_times,
-            parallel,
-        } => {
-            run_benchmark_cmd(games, &mcts_times, parallel, viewer);
-        }
-    }
-}
-
-fn run_visible_game(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-    seed: Option<u64>,
-    viewer: Option<&Arc<ReplayStore>>,
-) -> stats::GameResult {
-    if let Some(viewer) = viewer {
-        return viewer.run_game(agents, config, seed);
-    }
-    seed.map_or_else(
-        || run_game(agents, config),
-        |seed| run_game_seeded(agents, config, seed),
-    )
-}
-
-struct RunOptions<'a> {
-    mcts_time: u64,
-    minimax_depth: u32,
-    max_turns: u32,
-    parallel: bool,
-    json_output: bool,
-    viewer: Option<&'a Arc<ReplayStore>>,
-}
-
-fn run_tournament_cmd(num_games: usize, agent_types: &[AgentType], options: RunOptions<'_>) {
-    let RunOptions {
-        mcts_time,
-        minimax_depth,
-        max_turns,
-        parallel,
-        json_output,
-        viewer,
-    } = options;
-    if !json_output {
-        println!("\n{}", "=== Snake Gym Tournament ===".green().bold());
-        println!("Games: {} | Max turns: {}", num_games, max_turns);
-        println!("Parallel: {} | MCTS time: {}ms", parallel, mcts_time);
-        println!();
-    }
-
-    // Create agents
-    let agents: Vec<Box<dyn Agent>> = agent_types
-        .iter()
-        .map(|t| t.create_agent(mcts_time, minimax_depth))
-        .collect();
-
-    let agent_refs: Vec<&dyn Agent> = agents.iter().map(|a| a.as_ref()).collect();
-    let agent_names: Vec<String> = agents.iter().map(|a| a.name().to_string()).collect();
-
-    let config = GameConfig {
-        num_snakes: agents.len().min(4),
-        max_turns,
-        ..GameConfig::default()
-    };
-
-    // Progress bar
-    let pb = if !json_output {
-        let pb = ProgressBar::new(num_games as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-                )
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-
-    // Run games
-    let results: Vec<_> = if parallel {
-        use rayon::prelude::*;
-        (0..num_games)
-            .into_par_iter()
-            .map(|_| {
-                let result = run_visible_game(&agent_refs, &config, None, viewer);
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
-                result
-            })
-            .collect()
-    } else {
-        (0..num_games)
-            .map(|_| {
-                let result = run_visible_game(&agent_refs, &config, None, viewer);
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
-                result
-            })
-            .collect()
-    };
-
-    if let Some(pb) = pb {
-        pb.finish_with_message("Done!");
-    }
-
-    // Compute and display stats
-    let stats = TournamentStats::from_results(&results, &agent_names);
-
-    if json_output {
-        println!("{}", stats.to_json());
-    } else {
-        stats.print_summary();
-    }
-}
-
-fn run_duel_cmd(
-    agent1_type: AgentType,
-    agent2_type: AgentType,
-    num_games: usize,
-    seed: Option<u64>,
-    options: RunOptions<'_>,
-) {
-    let RunOptions {
-        mcts_time,
-        minimax_depth,
-        max_turns,
-        parallel,
-        json_output,
-        viewer,
-    } = options;
-    if !json_output {
-        println!("\n{}", "=== Snake Gym Duel ===".green().bold());
-        println!("{:?} vs {:?}", agent1_type, agent2_type);
-        println!("Games: {} | Max turns: {}", num_games, max_turns);
-        println!("Seat order alternates; seeded runs reuse each seed for the paired swap.");
-        if seed.is_some() && num_games % 2 == 1 {
-            println!(
-                "Note: an odd game count leaves the final seed played in one seat only \
-                 (not a balanced pair)."
-            );
-        }
-        println!();
-    }
-
-    // Create agents
-    let agent1 = agent1_type.create_agent(mcts_time, minimax_depth);
-    let agent2 = agent2_type.create_agent(mcts_time, minimax_depth);
-    let config = GameConfig::duel().with_max_turns(max_turns);
-
-    // Progress bar
-    let pb = if !json_output {
-        let pb = ProgressBar::new(num_games as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-                )
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-
-    // Run games
-    let results: Vec<_> = if parallel {
-        use rayon::prelude::*;
-        (0..num_games)
-            .into_par_iter()
-            .map(|index| {
-                let result = run_duel_game(
-                    index,
-                    seed,
-                    agent1.as_ref(),
-                    agent2.as_ref(),
-                    &config,
-                    viewer,
-                );
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
-                result
-            })
-            .collect()
-    } else {
-        (0..num_games)
-            .map(|index| {
-                let result = run_duel_game(
-                    index,
-                    seed,
-                    agent1.as_ref(),
-                    agent2.as_ref(),
-                    &config,
-                    viewer,
-                );
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
-                result
-            })
-            .collect()
-    };
-
-    if let Some(pb) = pb {
-        pb.finish_with_message("Done!");
-    }
-
-    // Compute and display stats
-    let h2h = HeadToHeadStats::from_results(&results, agent1.name(), agent2.name());
-
-    if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "agent1": {
-                    "name": h2h.agent1_name,
-                    "wins": h2h.agent1_wins,
-                },
-                "agent2": {
-                    "name": h2h.agent2_name,
-                    "wins": h2h.agent2_wins,
-                },
-                "draws": h2h.draws,
-                "total_games": num_games,
-            }))
-            .unwrap()
-        );
-    } else {
-        h2h.print_summary();
-    }
-}
-
-/// Whether the two duel agents trade seats for this game index.
-///
-/// Even indices keep the user-facing order; odd indices swap it. Alternating on
-/// the game index (rather than a random coin) means each consecutive seed pair
-/// plays the same starting board from both seats.
-fn duel_seat_swapped(index: usize) -> bool {
-    index % 2 == 1
-}
-
-/// The seed used for a duel game index.
-///
-/// Both games of a paired seat swap share one seed. With 2*k games the seeds are
-/// `base, base, base+1, base+1, ...`, so every starting position is evaluated
-/// from both seats.
-fn duel_seed_for_index(base_seed: u64, index: usize) -> u64 {
-    base_seed.wrapping_add((index / 2) as u64)
-}
-
-fn run_duel_game(
-    index: usize,
-    base_seed: Option<u64>,
-    agent1: &dyn Agent,
-    agent2: &dyn Agent,
-    config: &GameConfig,
-    viewer: Option<&Arc<ReplayStore>>,
-) -> stats::GameResult {
-    let swapped = duel_seat_swapped(index);
-    let agents = if swapped {
-        [agent2, agent1]
-    } else {
-        [agent1, agent2]
-    };
-    let mut result = run_visible_game(
-        &agents,
-        config,
-        base_seed.map(|seed| duel_seed_for_index(seed, index)),
-        viewer,
-    );
-
-    // Convert the winner back from the seat order used for this game into the
-    // user-facing agent order.
-    if swapped {
-        result.winner = result.winner.map(swap_duel_winner);
-    }
-    result
-}
-
-fn swap_duel_winner(seat: usize) -> usize {
-    match seat {
-        0 => 1,
-        1 => 0,
-        other => other,
-    }
-}
-
-fn run_benchmark_cmd(
-    games_per_config: usize,
-    mcts_times: &[u64],
-    parallel: bool,
-    viewer: Option<&Arc<ReplayStore>>,
-) {
-    println!("\n{}", "=== Snake Gym Benchmark ===".green().bold());
-    println!("Testing MCTS at different think times against Random baseline");
-    println!("Games per config: {}", games_per_config);
-    println!();
-
-    let random_agent = RandomAgent::new();
-
-    for &time_ms in mcts_times {
-        let mcts_agent = MctsAgent::with_name(
-            format!("MCTS-{}ms", time_ms),
-            Duration::from_millis(time_ms),
-        );
-
-        let agents: Vec<&dyn Agent> = vec![&mcts_agent, &random_agent];
-        let config = GameConfig::duel();
-
-        let pb = ProgressBar::new(games_per_config as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&format!(
-                    "{{spinner:.green}} MCTS {}ms [{{bar:30.cyan/blue}}] {{pos}}/{{len}}",
-                    time_ms
-                ))
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-
-        let results: Vec<_> = if parallel {
-            use rayon::prelude::*;
-            (0..games_per_config)
-                .into_par_iter()
-                .map(|_| {
-                    let result = run_visible_game(&agents, &config, None, viewer);
-                    pb.inc(1);
-                    result
-                })
-                .collect()
-        } else {
-            (0..games_per_config)
-                .map(|_| {
-                    let result = run_visible_game(&agents, &config, None, viewer);
-                    pb.inc(1);
-                    result
-                })
-                .collect()
-        };
-
-        pb.finish();
-
-        let h2h = HeadToHeadStats::from_results(&results, mcts_agent.name(), random_agent.name());
-
-        println!(
-            "  MCTS {}ms: {:.1}% win rate, {:.1}% score ({} wins / {} losses / {} draws)",
-            time_ms,
-            h2h.win_rate(h2h.agent1_wins) * 100.0,
-            h2h.score(h2h.agent1_wins) * 100.0,
-            h2h.agent1_wins.to_string().green(),
-            h2h.agent2_wins.to_string().red(),
-            h2h.draws.to_string().yellow()
-        );
-    }
-
-    println!();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{duel_seat_swapped, duel_seed_for_index, swap_duel_winner};
-
-    #[test]
-    fn swapped_duel_winner_maps_back_to_agent_order() {
-        assert_eq!(swap_duel_winner(0), 1);
-        assert_eq!(swap_duel_winner(1), 0);
-        // A non-seat index (should not occur in a duel) is left alone.
-        assert_eq!(swap_duel_winner(3), 3);
-    }
-
-    #[test]
-    fn duel_seat_pairing_reuses_the_same_seed_for_both_seats() {
-        let base = 1_000_000u64;
-        assert!(!duel_seat_swapped(0));
-        assert!(duel_seat_swapped(1));
-        assert_eq!(duel_seed_for_index(base, 0), duel_seed_for_index(base, 1));
-        assert_eq!(duel_seed_for_index(base, 2), duel_seed_for_index(base, 3));
-        assert_eq!(duel_seed_for_index(base, 2), base + 1);
-        assert_eq!(duel_seed_for_index(base, 3), base + 1);
-        // The pairing is stable: the same index always maps to the same seed.
-        assert_eq!(duel_seed_for_index(base, 8), duel_seed_for_index(base, 9));
-        assert_eq!(duel_seed_for_index(base, 8), base + 4);
-    }
 }

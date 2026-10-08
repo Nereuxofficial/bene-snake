@@ -2,22 +2,22 @@
 name = "gym"
 version = "0.1.0"
 edition = "2024"
-description = "Benchmarking gym for pitting bene-snake against other snake implementations"
+description = "Certified paired production decision benchmark for Battlesnake"
 
 [dependencies]
-lib = { workspace = true }
-battlesnake-game-types = { workspace = true }
-rand = { workspace = true, features = ["simd_support"] }
+anyhow = "1.0.104"
+sha2 = "0.10.9"
+libc = "=0.2.189"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-rayon = { workspace = true }
-indicatif = { workspace = true }
-tabled = { workspace = true }
-colored = { workspace = true }
 axum = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "process", "io-util", "fs"] }
 
 [[bin]]
 name = "snake-gym"
 path = "src/main.rs"
+
+[dev-dependencies]
+battlesnake-game-types = { workspace = true }

@@ -37,6 +37,7 @@ impl GameState {
         }
     }
 
+    /// The new server is doing all kinds of nonsense we have to clean up here, e.g. sending dead snakes
     pub fn normalize(&mut self, game: &mut Game) -> Result<()> {
         self.touched = Instant::now();
         let mut dead: BTreeMap<String, i32> = self

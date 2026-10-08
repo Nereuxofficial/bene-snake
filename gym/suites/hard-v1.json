@@ -1,0 +1,1 @@
+{"schema":1,"name":"hard-v1-development","families":["crowded_duel","coalition_escape","starvation_detour"],"max_attempts_per_case":800,"node_limit":30000,"certificate_limit":25000,"wall_ms":2000,"max_trivial_share":0.0,"threshold":0.02,"bootstrap_samples":10000,"min_clusters_per_family":5}

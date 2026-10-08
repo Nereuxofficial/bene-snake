@@ -1,11 +1,12 @@
-//! Snake Gym - A benchmarking framework for Battlesnake AI agents
-
-pub mod agents;
+//! Certified, reproducible paired production decisions on synthetic positions.
+pub mod artifact;
+pub mod candidate;
+pub mod generate;
+mod hard;
+pub mod oracle;
+pub mod report;
+pub mod rules;
 pub mod runner;
+pub mod schema;
 pub mod stats;
-pub mod viewer;
-
-pub use agents::{HeuristicAgent, HeuristicPolicy, MinimaxAgent, MinimaxPolicy, RandomAgent};
-pub use lib::{Agent, MctsAgent};
-pub use runner::{GameConfig, run_game, run_tournament, run_tournament_parallel};
-pub use stats::{AgentStats, GameResult, HeadToHeadStats, TournamentStats};
+pub mod trials;

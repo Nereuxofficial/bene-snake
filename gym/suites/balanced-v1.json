@@ -1,0 +1,1 @@
+{"schema":1,"name":"balanced-v1-development","families":["unique_escape","head_contest","tail_growth","food_access","delayed_trap","forced_win"],"max_attempts_per_case":80,"node_limit":120000,"certificate_limit":60000,"wall_ms":10000,"max_trivial_share":0.2,"threshold":0.02,"bootstrap_samples":10000,"min_clusters_per_family":5}

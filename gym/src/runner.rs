@@ -1,496 +1,257 @@
-use std::collections::VecDeque;
-
-use battlesnake_game_types::{
-    compact_representation::standard::CellBoard4Snakes11x11,
-    types::{
-        ReasonableMovesGame, SimulableGame, StandardFoodPlaceableGame, VictorDeterminableGame,
-        build_snake_id_map,
-    },
-    wire_representation::{BattleSnake, Board, Game, NestedGame, Position, Ruleset},
+//! Durable orchestration: freeze corpus/identities before consulting candidates.
+use crate::{
+    artifact::*,
+    candidate, generate,
+    schema::*,
+    stats::{self, Summary},
+    trials,
 };
-use rand::seq::SliceRandom;
-use rand::{Rng, RngExt, SeedableRng, rngs::SmallRng};
-
-use crate::stats::GameResult;
-use lib::Agent;
-
-/// Configuration for game generation
-#[derive(Clone, Debug)]
-pub struct GameConfig {
-    pub width: u32,
-    pub height: u32,
-    pub num_snakes: usize,
-    pub initial_health: i32,
-    pub initial_length: usize,
-    pub num_food: usize,
-    pub max_turns: u32,
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+    time::Instant,
+};
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunState {
+    pub schema: u32,
+    pub status: String,
+    pub gaps: Vec<String>,
+    pub detail: String,
 }
-
-impl Default for GameConfig {
-    fn default() -> Self {
-        Self {
-            width: 11,
-            height: 11,
-            num_snakes: 4,
-            initial_health: 100,
-            initial_length: 3,
-            num_food: 5,
-            max_turns: 500,
-        }
-    }
-}
-
-impl GameConfig {
-    pub fn with_max_turns(mut self, max_turns: u32) -> Self {
-        self.max_turns = max_turns;
-        self
-    }
-
-    pub fn standard_4_snake() -> Self {
-        Self::default()
-    }
-
-    pub fn duel() -> Self {
-        Self {
-            num_snakes: 2,
-            num_food: 3,
-            ..Default::default()
-        }
-    }
-}
-
-/// Generates a random starting position for the game
-pub fn generate_random_game(config: &GameConfig) -> Game {
-    let mut rng = rand::rng();
-    generate_random_game_with_rng(config, &mut rng)
-}
-
-pub fn generate_random_game_with_seed(config: &GameConfig, seed: u64) -> Game {
-    let mut rng = SmallRng::seed_from_u64(seed);
-    generate_random_game_with_rng(config, &mut rng)
-}
-
-fn generate_random_game_with_rng(config: &GameConfig, rng: &mut impl Rng) -> Game {
-    // Standard starting positions for snakes (corners and edges)
-    let standard_positions = vec![
-        Position::new(1, 1),
-        Position::new(1, 5),
-        Position::new(1, 9),
-        Position::new(5, 1),
-        Position::new(5, 9),
-        Position::new(9, 1),
-        Position::new(9, 5),
-        Position::new(9, 9),
-    ];
-
-    // Shuffle and take positions for snakes
-    let mut positions = standard_positions;
-    positions.shuffle(rng);
-    let snake_positions: Vec<_> = positions.into_iter().take(config.num_snakes).collect();
-
-    // Create snakes
-    let snakes: Vec<BattleSnake> = snake_positions
-        .iter()
-        .enumerate()
-        .map(|(i, pos)| {
-            let mut body = VecDeque::new();
-            // Initial body: head at pos, rest of body stacked at the same position
-            body.push_back(*pos);
-            for _ in 1..config.initial_length {
-                body.push_back(*pos);
-            }
-
-            BattleSnake {
-                id: format!("snake_{}", i),
-                name: format!("Snake {}", i),
-                head: *pos,
-                body,
-                health: config.initial_health,
-                shout: None,
-                actual_length: None,
-            }
-        })
-        .collect();
-
-    // Generate food positions (avoid snake positions)
-    let mut food = Vec::new();
-    let occupied: std::collections::HashSet<_> = snake_positions.iter().collect();
-
-    while food.len() < config.num_food {
-        let pos = Position::new(
-            rng.random_range(0..config.width as i32),
-            rng.random_range(0..config.height as i32),
-        );
-        if !occupied.contains(&pos) && !food.contains(&pos) {
-            food.push(pos);
-        }
-    }
-
-    let board = Board {
-        height: config.height,
-        width: config.width,
-        food,
-        snakes: snakes.clone(),
-        hazards: vec![],
-    };
-
-    Game {
-        you: snakes[0].clone(),
-        board,
-        turn: 0,
-        latency: 0,
-        timeout: 500,
-        game: NestedGame {
-            id: "gym-game".to_string(),
-            ruleset: Ruleset {
-                name: "standard".to_string(),
-                version: "v1.0.0".to_string(),
-                settings: None,
-            },
-            timeout: 500,
-            map: None,
-            source: None,
+fn state(out: &Path, status: &str, gaps: Vec<String>, detail: String) -> Result<()> {
+    write_json(
+        &out.join("state.json"),
+        &RunState {
+            schema: SCHEMA,
+            status: status.into(),
+            gaps,
+            detail,
         },
+    )
+}
+pub fn freeze_corpus(from: &Path, out: &Path) -> Result<()> {
+    let (g, cases) = generate::load(from)?;
+    ensure!(g.complete, "corpus quotas incomplete");
+    fs::create_dir_all(out.join("certificates"))?;
+    for name in ["generation.json", "corpus.jsonl"] {
+        fs::copy(from.join(name), out.join(name))?;
     }
-}
-
-/// Runs a single game with the given agents
-pub fn run_game(agents: &[&dyn Agent], config: &GameConfig) -> GameResult {
-    let mut rng = rand::rng();
-    let game = generate_random_game_with_rng(config, &mut rng);
-    run_game_from_start(agents, config, game, &mut rng, None)
-}
-
-pub fn run_game_seeded(agents: &[&dyn Agent], config: &GameConfig, seed: u64) -> GameResult {
-    let mut rng = SmallRng::seed_from_u64(seed);
-    let game = generate_random_game_with_rng(config, &mut rng);
-    run_game_from_start(agents, config, game, &mut rng, None)
-}
-
-type FrameObserver<'a> = &'a mut dyn FnMut(u32, &CellBoard4Snakes11x11);
-
-/// Run a game, observing turn zero and every resulting board, including the
-/// terminal board. The observer never participates in move selection or RNG.
-pub fn run_game_observed(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-    seed: Option<u64>,
-    mut observer: impl FnMut(u32, &CellBoard4Snakes11x11),
-) -> GameResult {
-    if let Some(seed) = seed {
-        let mut rng = SmallRng::seed_from_u64(seed);
-        let game = generate_random_game_with_rng(config, &mut rng);
-        run_game_from_start(agents, config, game, &mut rng, Some(&mut observer))
-    } else {
-        let mut rng = rand::rng();
-        let game = generate_random_game_with_rng(config, &mut rng);
-        run_game_from_start(agents, config, game, &mut rng, Some(&mut observer))
+    for c in cases {
+        let file = format!("{}.json", c.certificate_hash);
+        fs::copy(
+            from.join("certificates").join(&file),
+            out.join("certificates").join(&file),
+        )?;
     }
+    Ok(())
 }
-
-fn run_game_from_start(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-    game: Game,
-    rng: &mut impl Rng,
-    mut observer: Option<FrameObserver<'_>>,
-) -> GameResult {
-    assert!(
-        agents.len() >= config.num_snakes,
-        "Need at least {} agents for {} snakes",
-        config.num_snakes,
-        config.num_snakes
+pub fn initialize(
+    repo: &Path,
+    out: &Path,
+    a: &str,
+    b: &str,
+    repeats: usize,
+    timeout_ms: u64,
+) -> Result<()> {
+    ensure!(
+        repeats > 0 && timeout_ms > 0,
+        "repeats/timeout must be positive"
     );
-
-    let snake_id_map = build_snake_id_map(&game);
-    let mut board: CellBoard4Snakes11x11 = game
-        .as_cell_board(&snake_id_map)
-        .expect("Failed to create cell board");
-
-    let mut turn = 0;
-    if let Some(observer) = observer.as_mut() {
-        observer(turn, &board);
-    }
-
-    // Game loop
-    // The compact board's `is_over` is perspective-relative: it also returns true
-    // when SnakeId(0) (the API's `you`) dies. A gym game continues while at least
-    // two snakes remain, regardless of which one died.
-    while board.alive_snake_count() > 1 && turn < config.max_turns {
-        // Legal moves are identical for every agent in this simultaneous turn;
-        // compute them once instead of rescanning the board once per snake.
-        let moves: Vec<_> = board
-            .reasonable_moves_for_each_snake()
-            .into_iter()
-            .filter_map(|(snake_id, legal_moves)| {
-                if legal_moves.is_empty() {
-                    return None;
-                }
-                let agent = agents
-                    .get(snake_id.0 as usize)
-                    .expect("agent list must include every simulated snake");
-                let mv = agent.choose_move(&board, snake_id);
-                Some((snake_id, [mv]))
-            })
-            .collect();
-
-        // If no moves available, game is over
-        if moves.is_empty() {
-            break;
-        }
-
-        // Simulate the turn
-        let next_board_opt: Option<CellBoard4Snakes11x11> =
-            board.simulate_with_moves(&moves).next().map(|(_, b)| b);
-
-        if let Some(mut next_board) = next_board_opt {
-            next_board.place_food(rng);
-            board = next_board;
-        } else {
-            break;
-        }
-
-        turn += 1;
-        if let Some(observer) = observer.as_mut() {
-            observer(turn, &board);
-        }
-    }
-
-    // Determine winner
-    // `get_winner` also returns a survivor when SnakeId(0) has died, which is
-    // useful to the live snake's perspective but is not a gym game result.
-    let winner = (board.alive_snake_count() == 1)
-        .then(|| board.get_winner())
-        .flatten();
-
-    GameResult {
-        winner: winner.map(|w| w.0 as usize),
-        turns: turn,
-        num_snakes: config.num_snakes,
-    }
+    ensure!(
+        !out.join("manifest.json").exists(),
+        "run exists; use resume"
+    );
+    let (g, _) = generate::load(out)?;
+    ensure!(g.complete, "corpus incomplete; inspect generation.json");
+    let start = Instant::now();
+    let harness = std::env::current_exe()?;
+    fs::create_dir_all(out.join("binaries"))?;
+    let frozen_harness = out.join("binaries/snake-gym");
+    fs::copy(&harness, &frozen_harness)?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&frozen_harness, fs::Permissions::from_mode(0o500))?;
+    let ca = candidate::prepare(repo, out, a, 0)?;
+    let cb = candidate::prepare(repo, out, b, 1)?;
+    let m=Manifest{schema:SCHEMA,run_id:format!("{}-{}",timestamp(),&g.corpus_hash[..12]),created:timestamp(),corpus_hash:g.corpus_hash,generation_hash:file_hash(&out.join("generation.json"))?,harness_hash:file_hash(&std::env::current_exe()?)?,rules_hash:rules_hash(),oracle_hash:oracle_hash(),candidates:[ca,cb],repeats,timeout_ms,suite:g.suite,machine:candidate::machine()?,mode:"cold; sequential; synthetic standard 11x11; no future food; adversarial coalition; server may bind 0.0.0.0".into(),environment:BTreeMap::from([("PORT".into(),"unique ephemeral port per process".into()),("GLITCHTIP_KEY".into(),"empty (disabled telemetry)".into()),("RUST_LOG".into(),"warn".into()),("TZ".into(),"UTC".into()),("inherited environment".into(),"cleared; empty runtime .env stops ancestor dotenv loading".into()),("worker count".into(),"implemented by each binary; unobserved".into())]),build_ms:start.elapsed().as_millis() as u64};
+    write_json(&out.join("manifest.json"), &m)?;
+    atomic(
+        &out.join("manifest.sha256"),
+        file_hash(&out.join("manifest.json"))?.as_bytes(),
+    )?;
+    state(out, "interrupted", vec![], "not started".into())?;
+    Ok(())
 }
-
-/// Run multiple games and collect results
-pub fn run_tournament(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-    num_games: usize,
-) -> Vec<GameResult> {
-    (0..num_games).map(|_| run_game(agents, config)).collect()
-}
-
-/// Run multiple games in parallel
-pub fn run_tournament_parallel(
-    agents: &[&dyn Agent],
-    config: &GameConfig,
-    num_games: usize,
-) -> Vec<GameResult> {
-    use rayon::prelude::*;
-
-    (0..num_games)
-        .into_par_iter()
-        .map(|_| run_game(agents, config))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use battlesnake_game_types::types::{FoodGettableGame, Move, SnakeId};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    struct EatThenObserve {
-        calls: AtomicUsize,
-        saw_replacement: AtomicBool,
-    }
-
-    impl Agent for EatThenObserve {
-        fn name(&self) -> &str {
-            "eat-then-observe"
+pub fn audit(out: &Path, check_harness: bool) -> Result<(Manifest, Vec<Case>, Vec<Attempt>)> {
+    let m: Manifest = read_json(&out.join("manifest.json"))?;
+    ensure!(
+        m.schema == SCHEMA && m.repeats > 0 && m.timeout_ms > 0,
+        "incompatible manifest"
+    );
+    ensure!(
+        fs::read_to_string(out.join("manifest.sha256"))? == file_hash(&out.join("manifest.json"))?,
+        "manifest/settings hash mismatch"
+    );
+    ensure!(
+        m.generation_hash == file_hash(&out.join("generation.json"))?,
+        "generation settings mismatch"
+    );
+    let (g, cases) = generate::load(out)?;
+    ensure!(
+        g.complete
+            && g.corpus_hash == m.corpus_hash
+            && m.rules_hash == rules_hash()
+            && m.oracle_hash == oracle_hash(),
+        "corpus/oracle mismatch"
+    );
+    if check_harness {
+        ensure!(
+            m.harness_hash == file_hash(&std::env::current_exe()?)?,
+            "harness binary changed; use frozen harness to resume"
+        );
+        for c in &m.candidates {
+            candidate::check(out, c)?;
         }
-
-        fn choose_move(&self, board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
-            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                Move::Right
-            } else {
-                self.saw_replacement.store(
-                    !board.get_all_food_as_positions().is_empty(),
-                    Ordering::Relaxed,
-                );
-                Move::Up
+    }
+    let attempts: Vec<Attempt> = read_jsonl(&out.join("attempts.jsonl"), check_harness)?;
+    let schedule = trials::schedule(&cases, m.repeats);
+    let mut order_keys = HashSet::new();
+    for a in &attempts {
+        let (case, rep, candidate) = *schedule.get(a.order).context("unexpected order index")?;
+        let c = &cases[case];
+        ensure!(
+            a.case_id == c.id
+                && a.repeat == rep
+                && a.candidate == candidate
+                && order_keys.insert(a.order),
+            "attempt schedule mismatch/duplicate"
+        );
+        let mut r = c.request.clone();
+        r.game.timeout = m.timeout_ms;
+        r.game.id = format!("{}-{}-{rep}-{candidate}", m.run_id, c.id);
+        ensure!(a.request_hash == value_hash(&r)?, "request hash mismatch");
+    }
+    stats::summarize(&m, &cases, &attempts, "interrupted", vec![], g.seed)?;
+    Ok((m, cases, attempts))
+}
+pub fn summary(out: &Path) -> Result<Summary> {
+    let (m, cases, attempts) = audit(out, false)?;
+    let st: RunState = read_json(&out.join("state.json"))?;
+    ensure!(st.schema == SCHEMA, "incompatible run state");
+    let g: Generation = read_json(&out.join("generation.json"))?;
+    let s = stats::summarize(
+        &m,
+        &cases,
+        &attempts,
+        &st.status,
+        st.gaps,
+        g.seed ^ 0xb00757a9,
+    )?;
+    write_json(&out.join("summary.json"), &s)?;
+    Ok(s)
+}
+pub async fn execute(out: &Path, resume: bool) -> Result<Summary> {
+    let _lock = RunLock::acquire(out)?;
+    let (m, cases, attempts) = audit(out, true)?;
+    let old: RunState = read_json(&out.join("state.json"))?;
+    ensure!(
+        old.status != "invalid",
+        "invalid comparison: {}",
+        old.detail
+    );
+    if old.status == "complete" && attempts.len() == cases.len() * m.repeats * 2 {
+        return summary(out);
+    }
+    let mut gaps = old.gaps;
+    if resume && attempts.len() < cases.len() * m.repeats * 2 {
+        gaps.push(format!(
+            "resume at {}; {} previously recorded attempts; original schedule retained",
+            timestamp(),
+            attempts.len()
+        ));
+    }
+    state(
+        out,
+        "interrupted",
+        gaps.clone(),
+        "active run; incomplete until all attempts durable".into(),
+    )?;
+    tokio::select! {result=measure(out,m,cases,attempts,gaps.clone())=>result,_=tokio::signal::ctrl_c()=>{state(out,"interrupted",gaps,"cancelled; incomplete blocks excluded".into())?;summary(out)}}
+}
+async fn measure(
+    out: &Path,
+    m: Manifest,
+    cases: Vec<Case>,
+    attempts: Vec<Attempt>,
+    gaps: Vec<String>,
+) -> Result<Summary> {
+    let client_start = Instant::now();
+    for c in &m.candidates {
+        if let Err(e) = trials::preflight(out, c, &cases[0]).await {
+            state(out, "invalid", gaps, e.to_string())?;
+            return Err(e);
+        }
+    }
+    state(
+        out,
+        "interrupted",
+        gaps.clone(),
+        "active run; incomplete until all scheduled attempts are durable".into(),
+    )?;
+    let done: HashSet<_> = attempts.iter().map(|a| a.order).collect();
+    let schedule = trials::schedule(&cases, m.repeats);
+    let mut recorded = done.len();
+    for (order, (case, rep, candidate)) in schedule.iter().copied().enumerate() {
+        if done.contains(&order) {
+            continue;
+        }
+        let result = trials::trial(out, &m, &cases[case], rep, candidate, order).await;
+        match result {
+            Ok(a) => append(&out.join("attempts.jsonl"), &a)?,
+            Err(e) => {
+                state(out, "interrupted", gaps, e.to_string())?;
+                return Err(e);
             }
         }
-    }
-
-    struct MoveLeft;
-
-    impl Agent for MoveLeft {
-        fn name(&self) -> &str {
-            "move-left"
-        }
-
-        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
-            Move::Left
+        recorded += 1;
+        if recorded.is_multiple_of(12) || recorded == schedule.len() {
+            let elapsed = client_start.elapsed().as_secs_f64();
+            eprintln!(
+                "run: {recorded}/{} attempts; {:.1}s elapsed; {:.1}s projected remaining",
+                schedule.len(),
+                elapsed,
+                elapsed / (recorded - done.len()) as f64 * (schedule.len() - recorded) as f64
+            );
         }
     }
+    state(out, "complete", gaps, "all planned attempts durable".into())?;
+    summary(out)
+}
 
-    #[test]
-    fn seeded_starts_reproduce_the_same_board() {
-        let config = GameConfig::duel();
-        assert_eq!(
-            generate_random_game_with_seed(&config, 20260924),
-            generate_random_game_with_seed(&config, 20260924)
+struct RunLock(std::fs::File);
+impl RunLock {
+    fn acquire(out: &Path) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(out.join("run.lock"))?;
+        ensure!(
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+            "another process owns this run"
         );
+        Ok(Self(f))
     }
-
-    #[test]
-    fn replenishes_food_after_the_last_piece_is_eaten() {
-        let config = GameConfig {
-            max_turns: 2,
-            ..GameConfig::duel()
-        };
-        let mut game = generate_random_game_with_seed(&config, 20260926);
-        let head = game.board.snakes[0].head;
-        game.board.food = vec![Position::new(head.x + 1, head.y)];
-        let eater = EatThenObserve {
-            calls: AtomicUsize::new(0),
-            saw_replacement: AtomicBool::new(false),
-        };
-        let mut rng = SmallRng::seed_from_u64(20260926);
-        run_game_from_start(&[&eater, &MoveLeft], &config, game, &mut rng, None);
-        assert!(eater.calls.load(Ordering::Relaxed) >= 2);
-        assert!(eater.saw_replacement.load(Ordering::Relaxed));
-    }
-
-    struct FixedMove(Move);
-
-    impl Agent for FixedMove {
-        fn name(&self) -> &str {
-            "fixed-move"
+}
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
         }
-
-        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
-            self.0
-        }
-    }
-
-    struct CountMove {
-        calls: std::sync::Arc<AtomicUsize>,
-        movement: Move,
-    }
-
-    impl Agent for CountMove {
-        fn name(&self) -> &str {
-            "count-move"
-        }
-
-        fn choose_move(&self, _board: &CellBoard4Snakes11x11, _you: SnakeId) -> Move {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            self.movement
-        }
-    }
-
-    #[test]
-    fn two_snake_turn_cap_with_both_survivors_is_a_draw() {
-        let config = GameConfig {
-            max_turns: 3,
-            ..GameConfig::duel()
-        };
-        let mut game = generate_random_game_with_seed(&config, 20260929);
-        let positions = [Position::new(0, 0), Position::new(0, 10)];
-        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
-            snake.head = position;
-            snake.body = VecDeque::from([position, position, position]);
-            snake.health = 100;
-        }
-        game.you = game.board.snakes[0].clone();
-        game.board.food = vec![];
-        let mut rng = SmallRng::seed_from_u64(11);
-
-        // Both snakes move right along their own row and stay alive to the cap.
-        let result = run_game_from_start(
-            &[&FixedMove(Move::Right), &FixedMove(Move::Right)],
-            &config,
-            game,
-            &mut rng,
-            None,
-        );
-
-        assert_eq!(result.turns, 3);
-        assert_eq!(result.winner, None, "two survivors at the cap is a draw");
-        assert_eq!(result.num_snakes, 2);
-    }
-
-    #[test]
-    fn two_snake_game_with_one_death_reports_the_survivor() {
-        let config = GameConfig {
-            max_turns: 5,
-            ..GameConfig::duel()
-        };
-        let mut game = generate_random_game_with_seed(&config, 20260930);
-        let positions = [Position::new(0, 10), Position::new(0, 0)];
-        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
-            snake.head = position;
-            snake.body = VecDeque::from([position, position, position]);
-            snake.health = 100;
-        }
-        game.you = game.board.snakes[0].clone();
-        game.board.food = vec![];
-        let mut rng = SmallRng::seed_from_u64(12);
-
-        // Snake 0 is on the top row and moves up off the board; snake 1 is on
-        // the bottom row and moves right safely.
-        let result = run_game_from_start(
-            &[&FixedMove(Move::Up), &FixedMove(Move::Right)],
-            &config,
-            game,
-            &mut rng,
-            None,
-        );
-
-        assert_eq!(result.winner, Some(1));
-        assert_eq!(result.turns, 1);
-    }
-
-    #[test]
-    fn four_snake_gym_continues_after_snake_zero_dies() {
-        let config = GameConfig {
-            max_turns: 3,
-            ..GameConfig::default()
-        };
-        let mut game = generate_random_game_with_seed(&config, 20260927);
-        let positions = [
-            Position::new(0, 0),
-            Position::new(3, 0),
-            Position::new(6, 0),
-            Position::new(9, 0),
-        ];
-        for (snake, position) in game.board.snakes.iter_mut().zip(positions) {
-            snake.head = position;
-            snake.body = VecDeque::from([position, position, position]);
-            snake.health = 100;
-        }
-        game.board.snakes[0].health = 1;
-        game.you = game.board.snakes[0].clone();
-        game.board.food = vec![Position::new(5, 5)];
-
-        let survivor_calls = std::sync::Arc::new(AtomicUsize::new(0));
-        // Snake zero survives the neck check but starves after moving right.
-        let die = FixedMove(Move::Right);
-        let survivors: Vec<_> = (0..3)
-            .map(|_| CountMove {
-                calls: std::sync::Arc::clone(&survivor_calls),
-                movement: Move::Up,
-            })
-            .collect();
-        let mut agents: Vec<&dyn Agent> = vec![&die];
-        agents.extend(survivors.iter().map(|agent| agent as &dyn Agent));
-        let mut rng = SmallRng::seed_from_u64(7);
-
-        let result = run_game_from_start(&agents, &config, game, &mut rng, None);
-
-        assert_eq!(result.turns, 3);
-        assert_eq!(result.winner, None);
-        assert_eq!(survivor_calls.load(Ordering::Relaxed), 9);
     }
 }
