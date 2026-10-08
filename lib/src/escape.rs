@@ -191,7 +191,6 @@ pub fn analyze(
         }
     }
     let mut surviving = 0;
-    let mut wide = 0;
     let mut preferred = weights;
     for mv in Move::all() {
         let index = mv.as_index();
@@ -231,20 +230,13 @@ pub fn analyze(
                 .saturating_mul(factor)
                 .saturating_add(food_bonus)
                 .saturating_add(space.exits.min(3) * 2);
-            if space.exits >= 2 {
-                wide |= 1 << index;
-            }
         }
     }
-    // A one-exit destination is a corridor that one rival head can seal, so prefer any
-    // candidate that keeps two exits. This has to be a mask constraint, not a weight:
-    // `choose_from_mask` only consults weights after visits and mean reward, so the guard
-    // is otherwise never heard. Fall back when no candidate is wide, so forced positions
-    // stay playable.
-    let surviving = if surviving == 0 { mask } else { surviving };
-    let wide = wide & surviving;
+    // Local exits are preferences, not survival proofs: two exits can both close
+    // while a one-exit route follows a moving tail. Keep that route available to
+    // MCTS and the tactical filter; prune only the solo self-traps proved above.
     EscapeAnalysis {
-        mask: if wide == 0 { surviving } else { wide },
+        mask: if surviving == 0 { mask } else { surviving },
         weights: preferred,
     }
 }
@@ -362,6 +354,64 @@ mod replay_tests {
         types::{HeadGettableGame, ReasonableMovesGame, build_snake_id_map},
         wire_representation::Game,
     };
+
+    #[test]
+    fn corridor_preferences_keep_recorded_four_turn_escapes() {
+        use crate::{
+            mcts::Node,
+            tactical::{Limits, MoveVerdict},
+        };
+
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/corridor-escapes.json")).unwrap();
+        let parse_move = |value: &serde_json::Value| {
+            Move::all()
+                .into_iter()
+                .find(|m| serde_json::to_value(m).unwrap() == *value)
+                .unwrap()
+        };
+        for case in fixtures["cases"].as_array().unwrap() {
+            let game: Game = serde_json::from_value(case["game"].clone()).unwrap();
+            let escape = parse_move(&case["escape"]);
+            let exposed = parse_move(&case["exposed"]);
+            let ids = build_snake_id_map(&game);
+            let you = ids[&game.you.id];
+            let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
+            let root = Node::new_root(board);
+            let (mask, _) = root.root_candidates(you).unwrap();
+            assert_ne!(
+                mask & (1 << escape.as_index()),
+                0,
+                "{} turn {} discarded the escape {escape}",
+                game.game.id,
+                game.turn
+            );
+
+            // Check the finite-horizon label, without a machine-dependent time limit.
+            // This does not assert that the stochastic search must choose one move.
+            let analysis = crate::tactical::analyze(&board, you, mask, &Limits::for_test(4));
+            assert!(matches!(
+                analysis.verdict(escape),
+                MoveVerdict::ProvenSafe { horizon: 4 }
+            ));
+            assert!(matches!(
+                analysis.verdict(exposed),
+                MoveVerdict::Exposed { .. }
+            ));
+
+            // The duel filter must see the restored sibling and can then reject
+            // the exposed direction, rather than receiving a forced losing move.
+            if game.board.snakes.len() == 2 {
+                let filter = root.tactical_root_filter(you, &Limits::for_test(4));
+                assert!(filter.applied);
+                assert_eq!(
+                    root.best_move_with_root_filter(you, Some(&filter)),
+                    Some(escape)
+                );
+            }
+        }
+    }
+
     #[test]
     fn rejects_recorded_self_traps_and_keeps_the_escape() {
         let cases: Vec<serde_json::Value> =

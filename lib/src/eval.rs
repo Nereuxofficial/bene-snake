@@ -81,10 +81,7 @@ pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use battlesnake_game_types::{
-        types::build_snake_id_map,
-        wire_representation::Game,
-    };
+    use battlesnake_game_types::{types::build_snake_id_map, wire_representation::Game};
 
     fn board_with_food(health: i32, food: Position) -> (CellBoard4Snakes11x11, SnakeId) {
         let mut game: Game =
