@@ -5,3 +5,5 @@
 .env
 .cargo/
 /gym-replays/
+
+/gym-runs/
