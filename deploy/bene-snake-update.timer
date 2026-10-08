@@ -2,8 +2,9 @@
 Description=Check for bene-snake updates every five minutes
 
 [Timer]
-OnCalendar=*:0/5
-Persistent=true
+# Use elapsed time so a clock correction cannot defer updates for weeks.
+OnActiveSec=1min
+OnUnitInactiveSec=5min
 Unit=bene-snake-update.service
 
 [Install]
