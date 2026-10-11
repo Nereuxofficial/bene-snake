@@ -1,8 +1,8 @@
 //! Bounded tactical survival diagnostic (implementation-guide task B1).
 //!
-//! This module is a **diagnostic only**. It never changes production move
-//! selection: callers ask it a question and inspect the answer. Integration into
-//! the search root is a separate task (B2).
+//! The search root uses completed survival proofs to exclude exposed candidates
+//! when a proven-safe sibling exists, including in multiplayer positions.
+//! Unknown and all-exposed candidate sets remain available to MCTS.
 //!
 //! For each of our candidate first moves it asks: can an adversary force our
 //! snake to die within a small number of complete simultaneous turns, under the
@@ -303,11 +303,11 @@ impl RootFilter {
 /// Compute the bounded root filter for `you` on `board`.
 ///
 /// `base_mask` is the existing production candidate mask (reasonable moves minus
-/// losing head contests, with any root escape override applied). Only duels are
-/// enforced: when at least one candidate is proven safe at a common horizon, moves
+/// losing head contests, with any root escape override applied). When at least
+/// one candidate is proven safe at a common horizon, moves
 /// proven exposed at that horizon are removed and unknown moves are kept. With no
-/// proven-safe sibling, or for three/four-snake positions, the mask is preserved and
-/// the result is logged only. Immediate winning attacks are modelled as proven safe
+/// proven-safe sibling, the mask is preserved. The same rule applies to duels and
+/// three/four-snake positions. Immediate winning attacks are modelled as proven safe
 /// through the simulator, so they are never excluded by blanket contest avoidance.
 pub fn root_filter(
     board: &CellBoard4Snakes11x11,
@@ -347,7 +347,7 @@ pub fn root_filter(
     let analysis = analyze(board, you, base_mask, limits);
     let mut mask = base_mask;
     let mut applied = false;
-    if opponent_count == 1 && analysis.completed_horizon >= 1 {
+    if analysis.completed_horizon >= 1 {
         let safe_exists = analysis
             .verdicts()
             .iter()
@@ -1291,15 +1291,84 @@ mod tests {
     }
 
     #[test]
-    fn root_filter_is_log_only_for_multiplayer() {
-        let (board, you) = fixture_board("f624d5d8-f90d-4fad-b375-b94e281e4d62", 179);
-        let base = candidate_mask(&board, you);
-        let filter = root_filter(&board, you, base, &Limits::for_test(2));
-        assert_eq!(filter.opponent_count, 2);
-        assert!(
-            !filter.applied,
-            "multiplayer results are logged, not enforced"
-        );
+    fn root_filter_prevents_recorded_multiplayer_head_trap() {
+        let recorded: Game = serde_json::from_str(include_str!(
+            "../fixtures/multiplayer-d805d81d-235d-4035-a586-7d4263c58931-t40.json"
+        ))
+        .unwrap();
+        for opponents in [2, 3] {
+            let mut game = recorded.clone();
+            if opponents == 2 {
+                // Remove the distant snake while retaining the trapping NMC².
+                game.board.snakes.retain(|snake| snake.name != "Bwukinator");
+            }
+            let ids = build_snake_id_map(&game);
+            let you = ids[&game.you.id];
+            let board = game.as_cell_board(&ids).unwrap();
+            let root = crate::mcts::Node::new_root(board);
+            let (base, _) = root.root_candidates(you).unwrap();
+            assert_eq!(
+                base,
+                (1 << Move::Left.as_index()) | (1 << Move::Right.as_index())
+            );
+            // Use production horizons/call cap, without a machine-dependent deadline.
+            let limits = Limits {
+                deadline: None,
+                ..Limits::default()
+            };
+            let filter = root.tactical_root_filter(you, &limits);
+            assert_eq!(filter.opponent_count, opponents);
+            assert!(filter.applied);
+            assert_eq!(filter.mask, 1 << Move::Left.as_index());
+            let analysis = filter.analysis.as_ref().unwrap();
+            assert!(matches!(
+                analysis.verdict(Move::Left),
+                MoveVerdict::ProvenSafe { .. }
+            ));
+            assert!(matches!(
+                analysis.verdict(Move::Right),
+                MoveVerdict::Exposed { .. }
+            ));
+            assert_eq!(
+                root.best_move_with_root_filter(you, Some(&filter)),
+                Some(Move::Left)
+            );
+            assert_eq!(
+                root.guarded_fallback(you, Some(&filter), [true; 4]),
+                Some(Move::Left)
+            );
+
+            let unknown = root.tactical_root_filter(
+                you,
+                &Limits {
+                    max_simulator_calls: 1,
+                    deadline: None,
+                    ..Limits::default()
+                },
+            );
+            assert!(!unknown.applied);
+            assert_eq!(unknown.mask, base);
+        }
+    }
+
+    #[test]
+    fn root_filter_preserves_all_exposed_multiplayer_candidates() {
+        let game: Game = serde_json::from_str(include_str!(
+            "../fixtures/multiplayer-d805d81d-235d-4035-a586-7d4263c58931-t41.json"
+        ))
+        .unwrap();
+        let ids = build_snake_id_map(&game);
+        let you = ids[&game.you.id];
+        let root = crate::mcts::Node::new_root(game.as_cell_board(&ids).unwrap());
+        let (base, _) = root.root_candidates(you).unwrap();
+        assert_eq!(base, 1 << Move::Right.as_index());
+        let filter = root.tactical_root_filter(you, &Limits::for_test(2));
+        assert_eq!(filter.opponent_count, 3);
+        assert!(matches!(
+            filter.analysis.as_ref().unwrap().verdict(Move::Right),
+            MoveVerdict::Exposed { .. }
+        ));
+        assert!(!filter.applied);
         assert_eq!(filter.mask, base);
     }
 
