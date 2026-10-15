@@ -162,14 +162,27 @@ impl TreeCaches {
             })
     }
 
+    #[cfg(test)]
     pub fn insert(
         &self,
         game_id: String,
         turn: i32,
         candidates: SearchTreeCache,
     ) -> Option<PendingPonder> {
+        let (pending, retired) = self.insert_retiring(game_id, turn, candidates);
+        drop(retired);
+        pending
+    }
+
+    /// Let callers release their generation guard before recursive tree cleanup.
+    pub fn insert_retiring(
+        &self,
+        game_id: String,
+        turn: i32,
+        candidates: SearchTreeCache,
+    ) -> (Option<PendingPonder>, Vec<Option<CachedSearch>>) {
         if candidates.candidate_count() == 0 {
-            return None;
+            return (None, Vec::new());
         }
         let candidates = Arc::new(candidates);
         let token = PendingPonder {
@@ -202,7 +215,9 @@ impl TreeCaches {
                 .get(&game_id)
                 .is_some_and(|cache| cache.turn > turn)
             {
-                return None;
+                retired.push(Some(cached));
+                drop(state);
+                return (None, retired);
             }
             if !state.caches.contains_key(&game_id)
                 && state.caches.len() >= MAX_CACHED_GAMES
@@ -216,8 +231,7 @@ impl TreeCaches {
             }
             retired.push(state.caches.insert(game_id, cached));
         }
-        drop(retired);
-        Some(token)
+        (Some(token), retired)
     }
 
     pub fn response_sent(&self, token: PendingPonder) {

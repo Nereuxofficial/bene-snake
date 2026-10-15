@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod enclosure;
 pub mod escape;
 pub mod eval;
 pub mod food_race;

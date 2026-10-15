@@ -10,9 +10,9 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
     (a.x - b.x).abs() + (a.y - b.y).abs()
 }
 
-/// Score a board using health, length, mobility, food distance and opponent geometry.
+/// Production score. Enclosure remains opt-in until equal-budget strength evidence.
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
-    evaluate_board_with_food_races(cellboard, you, true)
+    evaluate_board_with_options(cellboard, you, true, false)
 }
 
 /// Isolate leaf food scoring for controlled comparisons. Root advice is independent.
@@ -20,6 +20,16 @@ pub fn evaluate_board_with_food_races(
     cellboard: &CellBoard4Snakes11x11,
     you: &SnakeId,
     food_races: bool,
+) -> u16 {
+    evaluate_board_with_options(cellboard, you, food_races, false)
+}
+
+/// Isolate the enclosure term while retaining the same food evaluator.
+pub fn evaluate_board_with_options(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    food_races: bool,
+    enclosure: bool,
 ) -> u16 {
     let food_positions = cellboard.get_all_food_as_positions();
     let health = cellboard.get_health(you);
@@ -90,6 +100,10 @@ pub fn evaluate_board_with_food_races(
         }
     }
 
+    if enclosure {
+        score -= crate::enclosure::assess(cellboard, *you).penalty;
+    }
+
     // Ensure score is non-negative and fits in u16
     score.max(1).min(u16::MAX as i32) as u16
 }
@@ -146,6 +160,25 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let you = ids[&game.you.id];
         (game.as_cell_board(&ids).unwrap(), you)
+    }
+
+    #[test]
+    fn production_default_preserves_the_food_race_baseline() {
+        let games: Vec<Game> =
+            serde_json::from_str(include_str!("../fixtures/enclosure-replays.json")).unwrap();
+        for game in games {
+            let ids = build_snake_id_map(&game);
+            let board = game.as_cell_board(&ids).unwrap();
+            let you = ids[&game.you.id];
+            if crate::enclosure::assess(&board, you).penalty > 0 {
+                assert_eq!(
+                    evaluate_board(&board, &you),
+                    evaluate_board_with_options(&board, &you, true, false)
+                );
+                return;
+            }
+        }
+        panic!("fixture must distinguish the experimental scorer");
     }
 
     #[test]

@@ -20,7 +20,7 @@ use battlesnake_game_types::{
 use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 
-use crate::eval::evaluate_board_with_food_races;
+use crate::eval::evaluate_board_with_options;
 use tracing::info;
 
 #[cfg(test)]
@@ -77,6 +77,7 @@ const UNIFORM_MOVE_PERCENT: u32 = 20;
 struct RolloutOptions {
     food_guidance: bool,
     food_race_evaluation: bool,
+    enclosure_evaluation: bool,
     food_gain_reward: u32,
     depth: u32,
 }
@@ -503,6 +504,7 @@ pub struct Node {
     escape: OnceLock<(SnakeId, crate::escape::EscapeAnalysis)>,
     food_races_enabled: bool,
     food_race_evaluation: bool,
+    enclosure_evaluation: bool,
     // Most tree nodes never become roots; keep the route diagnostics out of
     // their inline footprint and allocate them only when preparing a root.
     food_race: OnceLock<Box<RacePrior>>,
@@ -706,6 +708,7 @@ impl Node {
         snapshot.escape_guard_enabled = self.escape_guard_enabled;
         snapshot.food_races_enabled = self.food_races_enabled;
         snapshot.food_race_evaluation = self.food_race_evaluation;
+        snapshot.enclosure_evaluation = self.enclosure_evaluation;
         snapshot.tree_depth = self.tree_depth;
         snapshot.visits.store(self.visits(), Ordering::Relaxed);
         for (target, source) in snapshot.own_moves.iter().zip(&self.own_moves) {
@@ -747,6 +750,7 @@ impl Node {
         RolloutOptions {
             food_guidance: self.food_guidance,
             food_race_evaluation: self.food_race_evaluation,
+            enclosure_evaluation: self.enclosure_evaluation,
             food_gain_reward: self.food_gain_reward,
             depth: self.rollout_depth,
         }
@@ -791,6 +795,8 @@ impl Node {
             escape: OnceLock::new(),
             food_races_enabled: true,
             food_race_evaluation: true,
+            // Replay screening found a throughput cost without equal-time benefit.
+            enclosure_evaluation: false,
             food_race: OnceLock::new(),
             food_override: AtomicU64::new(0),
             food_guidance,
@@ -836,6 +842,13 @@ impl Node {
     pub fn new_root_with_food_race_evaluation(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
         let mut root = Self::new_root(board);
         root.food_race_evaluation = enabled;
+        root
+    }
+
+    /// Compare enclosure scoring with identical food advice and rollout policies.
+    pub fn new_root_with_enclosure_evaluation(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
+        let mut root = Self::new_root(board);
+        root.enclosure_evaluation = enabled;
         root
     }
 
@@ -1206,6 +1219,7 @@ impl Node {
         child.tree_depth = self.tree_depth;
         child.food_races_enabled = self.food_races_enabled;
         child.food_race_evaluation = self.food_race_evaluation;
+        child.enclosure_evaluation = self.enclosure_evaluation;
         let child = Arc::new(child);
         children.insert(key, Arc::clone(&child));
         ChildResult::Expanded(child)
@@ -1307,7 +1321,12 @@ fn rollout_from(
         WIN_REWARD
     } else {
         let gained = u32::from(board.get_length(you).saturating_sub(root_length));
-        let score = evaluate_board_with_food_races(&board, you, options.food_race_evaluation);
+        let score = evaluate_board_with_options(
+            &board,
+            you,
+            options.food_race_evaluation,
+            options.enclosure_evaluation,
+        );
         (leaf_reward(score) + gained * options.food_gain_reward).min(WIN_REWARD - 1)
     }
 }
@@ -1683,6 +1702,38 @@ mod tests {
             reached_cap,
             "fixture must reach terminal starvation at the cap"
         );
+    }
+
+    #[test]
+    fn enclosure_toggle_survives_children_and_retention_without_changing_root_advice() {
+        use battlesnake_game_types::types::SimulableGame;
+        let (board, you, _) = turn33();
+        assert!(!Node::new_root(board).rollout_options().enclosure_evaluation);
+        let enabled = Node::new_root_with_enclosure_evaluation(board, true);
+        let disabled = Node::new_root_with_enclosure_evaluation(board, false);
+        assert_eq!(enabled.root_candidates(you), disabled.root_candidates(you));
+        for flag in [false, true] {
+            let root = Node::new_root_with_enclosure_evaluation(board, flag);
+            assert!(root.rollout_options().food_race_evaluation);
+            let legal = board.reasonable_moves_for_each_snake();
+            let (action, _) = board.simulate_with_moves(&legal).next().unwrap();
+            let moves: ArrayVec<_, 4> = action
+                .into_inner()
+                .iter()
+                .enumerate()
+                .filter_map(|(id, mv)| mv.map(|mv| (SnakeId(id as u8), mv)))
+                .collect();
+            let ChildResult::Expanded(child) = root.child_for_action(&moves) else {
+                panic!("first child")
+            };
+            assert_eq!(child.rollout_options().enclosure_evaluation, flag);
+            let mut retained = 0;
+            let snapshot = root.retained_snapshot(4, &mut retained);
+            assert_eq!(snapshot.rollout_options().enclosure_evaluation, flag);
+            for child in snapshot.children.read().unwrap().values() {
+                assert_eq!(child.rollout_options().enclosure_evaluation, flag);
+            }
+        }
     }
 
     #[test]

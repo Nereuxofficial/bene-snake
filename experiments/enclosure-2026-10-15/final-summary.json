@@ -1,0 +1,40 @@
+{
+  "implementation": "parent-reviewed final",
+  "production_default": false,
+  "penalty_cap": 96,
+  "modes": {
+    "fixed": {
+      "complete_pairs": 39,
+      "decision_changes": 2,
+      "median_throughput_ratio": 0.7256837052647142,
+      "total_baseline_ms": 1508.114527,
+      "total_candidate_ms": 2183.0459809999998
+    },
+    "timed": {
+      "complete_pairs": 39,
+      "decision_changes": 2,
+      "median_throughput_ratio": 0.7208415786645156,
+      "total_baseline_ms": 2340.157585,
+      "total_candidate_ms": 2340.173913
+    },
+    "parallel": {
+      "complete_pairs": 39,
+      "decision_changes": 0,
+      "median_throughput_ratio": 0.8409750719602626,
+      "total_baseline_ms": 13650.84549,
+      "total_candidate_ms": 13652.615577
+    }
+  },
+  "audit": {
+    "boards": 51,
+    "penalized": 22,
+    "contested_frontier": 17,
+    "assessment_mean_us": 1.276225568627451
+  },
+  "source_sha256": {
+    "lib/src/enclosure.rs": "e2ba69df50b9da7633bd98d61ba3b5936ce44653b39879ca4be027b31307eef8",
+    "lib/src/eval.rs": "e106ed939ad6a89a00e12f49621635192e0c7efa96d2c8a182a39e524afdaec2",
+    "lib/src/mcts.rs": "2c07fb7a4c521d07de5e3116e3388282a40cfeecdb5f31c185171c8cef6335cc",
+    "lib/fixtures/enclosure-replays.json": "c45f16758502ba00888c6bb7475874e034a13011a0226ab77d1a9a21281186ba"
+  }
+}

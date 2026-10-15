@@ -1,0 +1,29 @@
+{
+  "fixed": {
+    "pairs": 39,
+    "changed": 2,
+    "iteration_ratio": 1.0,
+    "ms_old": 1444.738764,
+    "ms_new": 2080.92361
+  },
+  "timed": {
+    "pairs": 39,
+    "changed": 2,
+    "iteration_ratio": 0.7142030777517966,
+    "ms_old": 2340.127209,
+    "ms_new": 2340.206855
+  },
+  "parallel": {
+    "pairs": 39,
+    "changed": 0,
+    "iteration_ratio": 0.8245844387965939,
+    "ms_old": 13651.140804,
+    "ms_new": 13651.07361
+  },
+  "source_sha256": {
+    "lib/src/enclosure.rs": "9203bc6357aa7f07c5cce934c4d29c7c2a0c566c1ced02e139edc66299001477",
+    "lib/src/eval.rs": "66043368a273fa12db3b1a64fbbe40fb159dfa056161d6e027cf0ef96832783c",
+    "lib/src/mcts.rs": "7ef978086401a0fbb615e3ec1747ecb6cec0cc03ff00da71194e1ff3a373dc81",
+    "lib/fixtures/enclosure-replays.json": "c45f16758502ba00888c6bb7475874e034a13011a0226ab77d1a9a21281186ba"
+  }
+}

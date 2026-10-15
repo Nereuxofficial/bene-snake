@@ -26,6 +26,14 @@ struct Trace {
     id: u64,
     started: Instant,
     details: Mutex<Details>,
+    search: Mutex<SearchTiming>,
+}
+
+#[derive(Default)]
+struct SearchTiming {
+    stop_requested: Option<Instant>,
+    search_deadline: Option<Instant>,
+    publication_deadline: Option<Instant>,
 }
 
 struct Details {
@@ -52,6 +60,7 @@ impl MoveTrace {
         Self(Arc::new(Trace {
             id: NEXT_REQUEST.fetch_add(1, Ordering::Relaxed),
             started,
+            search: Mutex::new(SearchTiming::default()),
             details: Mutex::new(Details {
                 game_id: None,
                 turn: None,
@@ -76,6 +85,37 @@ impl MoveTrace {
         *details.timings.entry(previous).or_default() += elapsed;
         details.phase = phase;
         details.phase_started = Instant::now();
+    }
+
+    pub fn search_deadlines(&self, search_deadline: Instant, publication_deadline: Instant) {
+        let mut timing = self.0.search.lock().unwrap();
+        timing.search_deadline = Some(search_deadline);
+        timing.publication_deadline = Some(publication_deadline);
+    }
+
+    pub fn stop_requested(&self) {
+        let mut timing = self.0.search.lock().unwrap();
+        timing.stop_requested.get_or_insert_with(Instant::now);
+    }
+
+    pub fn workers_stopped(&self, joined_at: Instant) {
+        let details = self.0.details.lock().unwrap();
+        let timing = self.0.search.lock().unwrap();
+        tracing::info!(request_id=self.id(), game_id=details.game_id.as_deref().unwrap_or("unparsed"),
+            turn=details.turn.unwrap_or(-1), stop_to_join=?timing.stop_requested.filter(|t|*t <= joined_at).map(|t|joined_at.duration_since(t)),
+            event="workers_joined", "Search publication timing");
+    }
+
+    pub fn search_stage(&self, event: &'static str, stage_elapsed: Duration) {
+        let now = Instant::now();
+        let details = self.0.details.lock().unwrap();
+        let timing = self.0.search.lock().unwrap();
+        tracing::info!(request_id=self.id(), game_id=details.game_id.as_deref().unwrap_or("unparsed"),
+            turn=details.turn.unwrap_or(-1), event, stage_elapsed=?stage_elapsed,
+            since_stop=?timing.stop_requested.map(|t|now.saturating_duration_since(t)),
+            search_deadline_lateness=?timing.search_deadline.map(|t|now.saturating_duration_since(t)),
+            publication_deadline_lateness=?timing.publication_deadline.map(|t|now.saturating_duration_since(t)),
+            "Search publication timing");
     }
 
     pub fn event(&self, event: &'static str) {
@@ -284,6 +324,41 @@ mod tests {
         }
         assert!(logs.contains("response_bytes=8"));
     }
+    #[test]
+    fn publication_timings_preserve_identity_and_missing_stop_information() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || LogWriter(Arc::clone(&writer)))
+            .finish();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let trace = MoveTrace::new();
+        trace.identify("publication-game", 12);
+        trace.workers_stopped(Instant::now());
+        let deadline = Instant::now() - Duration::from_millis(2);
+        trace.search_deadlines(deadline, deadline);
+        trace.stop_requested();
+        trace.search_stage("selection_completed", Duration::from_micros(10));
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        let joined = logs.lines().find(|l| l.contains("workers_joined")).unwrap();
+        assert!(joined.contains("stop_to_join=None"));
+        let selected = logs
+            .lines()
+            .find(|l| l.contains("selection_completed"))
+            .unwrap();
+        for field in [
+            "game_id=\"publication-game\"",
+            "turn=12",
+            "since_stop=Some(",
+            "search_deadline_lateness=Some(",
+            "publication_deadline_lateness=Some(",
+        ] {
+            assert!(selected.contains(field), "missing {field}: {selected}");
+        }
+    }
+
     #[tokio::test]
     async fn cancelled_future_records_last_phase_and_identity_once() {
         let trace = MoveTrace::new();

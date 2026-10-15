@@ -237,6 +237,7 @@ fn physical_moves(game: &Game, snake: &BattleSnake) -> [bool; 4] {
     moves
 }
 
+#[derive(Clone)]
 pub struct ResponseMoves {
     pub fallback: Move,
     pub acceptable: [bool; 4],

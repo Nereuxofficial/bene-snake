@@ -17,7 +17,7 @@ use game_state::{GameState, ResponseMoves, response_moves};
 use git_version::git_version;
 use lib::mcts::{Node, SearchTreeCache};
 use ponder::{PendingPonder, TREE_CACHE_TTL, TreeCaches};
-use search::{PreparedSearch, SearchResult};
+use search::{CacheDelivery, PreparedSearch, SearchResult};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -41,6 +41,7 @@ const SEARCH_STOP_GRACE: Duration = Duration::from_millis(20);
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[derive(Clone)]
 struct DecodedState {
     board: Option<CellBoard4Snakes11x11>,
     response_moves: ResponseMoves,
@@ -90,9 +91,15 @@ fn store_search_candidates(
         .get(&decoded.game_id)
         .is_some_and(|state| Arc::ptr_eq(&state.search_generation, &decoded.search_generation))
     {
+        drop(games);
+        drop(candidates);
         return None;
     }
-    tree_caches().insert(decoded.game_id.clone(), decoded.turn, candidates)
+    let (pending, retired) =
+        tree_caches().insert_retiring(decoded.game_id.clone(), decoded.turn, candidates);
+    drop(games);
+    drop(retired);
+    pending
 }
 
 fn decode_state(text: String) -> color_eyre::Result<DecodedState> {
@@ -156,11 +163,17 @@ fn search_budget(game_timeout_ms: i64, elapsed: Duration) -> Duration {
         .saturating_sub(elapsed)
 }
 
-struct StopSearch(Arc<AtomicBool>);
+struct StopSearch(Arc<AtomicBool>, Option<telemetry::MoveTrace>);
 
 impl Drop for StopSearch {
     fn drop(&mut self) {
+        if let Some(trace) = &self.1 {
+            trace.stop_requested();
+        }
         self.0.store(true, Ordering::Relaxed);
+        if let Some(trace) = &self.1 {
+            trace.event("stop_requested");
+        }
     }
 }
 
@@ -195,14 +208,17 @@ async fn get_move(body: String) -> Response {
     get_move_with_trace(
         body,
         move |search, stop, result| {
-            search.run(stop, |outcome| {
+            search.run(stop, &publication, |outcome| {
                 // Send before telemetry and destruction of the unused tree.
+                let send_started = Instant::now();
                 let accepted = result.send(outcome).is_ok();
+                publication.search_stage("move_publication", send_started.elapsed());
                 publication.event(if accepted {
                     "worker_result_published"
                 } else {
                     "worker_result_receiver_dropped"
                 });
+                accepted
             });
         },
         trace,
@@ -318,7 +334,7 @@ async fn compute_move(
         }
     }
     let fallback = search.fallback();
-    let stop = StopSearch(Arc::new(AtomicBool::new(false)));
+    let stop = StopSearch(Arc::new(AtomicBool::new(false)), Some(trace.clone()));
     let stop_for_search = Arc::clone(&stop.0);
     let game_id = decoded.game_id.clone();
     let turn = decoded.turn;
@@ -343,20 +359,36 @@ async fn compute_move(
         .saturating_sub(start.elapsed())
         .saturating_sub(delivery_reserve);
     let grace = available.saturating_sub(budget).min(SEARCH_STOP_GRACE);
+    let search_deadline = Instant::now() + budget;
+    trace.search_deadlines(search_deadline, search_deadline + grace);
     trace.phase("waiting_search");
     let outcome = wait_for_search(result_rx, stop, budget, grace).await;
     trace.phase("building_response");
     let result_published = outcome.is_some();
     let mut chosen_move = fallback;
-    let mut retained_candidates = 0;
+
     let mut used_fallback = true;
-    let mut pending_ponder = None;
+    let mut cache_delivery = None;
     match outcome {
         Some(Some((chosen, candidates))) => {
             chosen_move = chosen;
             used_fallback = false;
-            retained_candidates = candidates.candidate_count();
-            pending_ponder = store_search_candidates(&decoded, candidates);
+            let identity = decoded.clone();
+            let cache_trace = trace.clone();
+            candidates.on_delivery(move |cache| {
+                let count = cache.candidate_count();
+                let pending = store_search_candidates(&identity, cache);
+                info!(
+                    request_id = cache_trace.id(),
+                    retained_candidates = count,
+                    accepted = pending.is_some(),
+                    "Deferred search cache completed"
+                );
+                if let Some(pending) = pending {
+                    tree_caches().response_sent(pending);
+                }
+            });
+            cache_delivery = Some(candidates);
         }
         Some(None) => {
             error!(game_id = %decoded.game_id, turn = decoded.turn, "Invalid search result; using fallback");
@@ -367,16 +399,17 @@ async fn compute_move(
     }
     info!(game_id = %decoded.game_id, turn = decoded.turn, request_id = trace.id(),
         chosen_move = %chosen_move, elapsed = ?start.elapsed(), reused, carried_visits,
-        retained_candidates, pondered_iterations, result_published, used_fallback, "MCTS move completed");
+        pondered_iterations, result_published, used_fallback, "MCTS move completed");
     let response = Json(json!({"move": chosen_move})).into_response();
-    if let Some(pending) = pending_ponder {
+    if let Some(delivery) = cache_delivery {
         let (parts, body) = response.into_parts();
         Response::from_parts(
             parts,
-            Body::new(PonderResponse {
+            Body::new(DeferredPonderResponse {
                 body,
-                pending: Some(pending),
+                delivery,
                 complete: false,
+                failed: false,
             }),
         )
     } else {
@@ -384,31 +417,31 @@ async fn compute_move(
     }
 }
 
-/// Start downtime work after the HTTP transport consumes the response body.
-/// Dropping an unsent response must not start pondering for a cancelled request.
-struct PonderResponse {
+/// A response and its optional cache snapshot can finish in either order.
+/// Only a consumed response authorises cache insertion and background search.
+struct DeferredPonderResponse {
     body: Body,
-    pending: Option<PendingPonder>,
+    delivery: CacheDelivery,
     complete: bool,
+    failed: bool,
 }
 
-impl HttpBody for PonderResponse {
+impl HttpBody for DeferredPonderResponse {
     type Data = Bytes;
     type Error = axum::Error;
-
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, axum::Error>>> {
         let result = Pin::new(&mut self.body).poll_frame(cx);
         if matches!(result, Poll::Ready(Some(Err(_)))) {
-            self.pending = None;
-        } else if result.is_ready() && self.body.is_end_stream() {
+            self.failed = true;
+            self.complete = false;
+        } else if !self.failed && result.is_ready() && self.body.is_end_stream() {
             self.complete = true;
         }
         result
     }
-
     fn is_end_stream(&self) -> bool {
         self.body.is_end_stream()
     }
@@ -416,13 +449,10 @@ impl HttpBody for PonderResponse {
         self.body.size_hint()
     }
 }
-
-impl Drop for PonderResponse {
+impl Drop for DeferredPonderResponse {
     fn drop(&mut self) {
-        if self.complete
-            && let Some(pending) = self.pending.take()
-        {
-            tree_caches().response_sent(pending);
+        if self.complete {
+            self.delivery.delivered();
         }
     }
 }
@@ -622,11 +652,24 @@ mod tests {
         let ids = GAME_STATES.get().unwrap().lock()[&game.game.id].ids.clone();
         let board: CellBoard4Snakes11x11 = game.as_cell_board(&ids).unwrap();
         let you = *board.you_id();
-        let (cache, iterations, ready) = tree_caches()
-            .snapshot(&game.game.id)
-            .expect("move retains searched replies");
+        // Cache publication is independent of the response and requires consumed
+        // delivery. Pause pondering while waiting for the deferred insertion.
+        let pause = tree_caches().pause();
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let (cache, iterations, ready) = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(snapshot) = tree_caches().snapshot(&game.game.id) {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("consumed move retains searched replies");
         assert_eq!(iterations, 0);
-        assert!(!ready);
+        assert!(ready);
         let replies: Vec<_> = board
             .simulate_with_moves(&board.reasonable_moves_for_each_snake())
             .filter_map(|(_, observed)| {
@@ -636,9 +679,7 @@ mod tests {
             })
             .collect();
         assert!(!replies.is_empty());
-        axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
+        drop(pause);
         tokio::time::timeout(Duration::from_secs(2), async {
             while tree_caches().snapshot(&game.game.id).unwrap().1 == 0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -691,26 +732,43 @@ mod tests {
         let _foreground = tree_caches().pause();
         tree_caches().wait_idle().await;
         let decoded = decode_state(serde_json::to_string(&game).unwrap()).unwrap();
-        let pending = store_search_candidates(&decoded, searched_candidates(&decoded)).unwrap();
-        drop(PonderResponse {
-            body: Body::from("unsent"),
-            pending: Some(pending),
-            complete: false,
-        });
-        assert!(!tree_caches().snapshot(&game.game.id).unwrap().2);
-
-        let pending = store_search_candidates(&decoded, searched_candidates(&decoded)).unwrap();
-        let body = Body::new(PonderResponse {
-            body: Body::from("{\"move\":\"up\"}"),
-            pending: Some(pending),
-            complete: false,
-        });
-        assert!(!tree_caches().snapshot(&game.game.id).unwrap().2);
-        assert_eq!(
-            axum::body::to_bytes(body, 1024).await.unwrap(),
-            "{\"move\":\"up\"}"
-        );
-        assert!(tree_caches().snapshot(&game.game.id).unwrap().2);
+        for consumed in [false, true] {
+            let delivery = CacheDelivery::ready_for_test(searched_candidates(&decoded));
+            let identity = decoded.clone();
+            let (retained, receive) = tokio::sync::oneshot::channel();
+            delivery.on_delivery(move |cache| {
+                let pending = store_search_candidates(&identity, cache);
+                let accepted = pending.is_some();
+                if let Some(pending) = pending {
+                    tree_caches().response_sent(pending);
+                }
+                let _ = retained.send(accepted);
+            });
+            let body = Body::new(DeferredPonderResponse {
+                body: Body::from("{\"move\":\"up\"}"),
+                delivery,
+                complete: false,
+                failed: false,
+            });
+            assert!(tree_caches().snapshot(&game.game.id).is_none());
+            if consumed {
+                assert_eq!(
+                    axum::body::to_bytes(body, 1024).await.unwrap(),
+                    "{\"move\":\"up\"}"
+                );
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(1), receive)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                );
+                assert!(tree_caches().snapshot(&game.game.id).unwrap().2);
+            } else {
+                drop(body);
+                assert!(receive.await.is_err());
+                assert!(tree_caches().snapshot(&game.game.id).is_none());
+            }
+        }
         end(serde_json::to_string(&game).unwrap()).await;
     }
 
@@ -739,6 +797,40 @@ mod tests {
         start(body.clone()).await;
         assert!(store_search_candidates(&current, searched_candidates(&current)).is_none());
         end(body).await;
+    }
+
+    #[tokio::test]
+    async fn deferred_cache_rejects_new_generation_and_ended_games() {
+        for ended in [false, true] {
+            let mut game: Game =
+                serde_json::from_str(include_str!("../lib/fixtures/turn33-food.json")).unwrap();
+            game.game.id = format!("deferred-cache-generation-{ended}");
+            game.board.food.clear();
+            let body = serde_json::to_string(&game).unwrap();
+            let old = decode_state(body.clone()).unwrap();
+            let delivery = CacheDelivery::ready_for_test(searched_candidates(&old));
+            let (finished, receive) = tokio::sync::oneshot::channel();
+            delivery.on_delivery(move |cache| {
+                let accepted = store_search_candidates(&old, cache).is_some();
+                let _ = finished.send(accepted);
+            });
+            if ended {
+                end(body.clone()).await;
+                start(body.clone()).await;
+            } else {
+                game.turn += 1;
+                decode_state(serde_json::to_string(&game).unwrap()).unwrap();
+            }
+            delivery.delivered();
+            assert!(
+                !tokio::time::timeout(Duration::from_secs(1), receive)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            );
+            assert!(tree_caches().snapshot(&game.game.id).is_none());
+            end(body).await;
+        }
     }
 
     #[test]
@@ -902,7 +994,7 @@ mod tests {
         });
         let finished = wait_for_search(
             rx,
-            StopSearch(Arc::new(AtomicBool::new(false))),
+            StopSearch(Arc::new(AtomicBool::new(false)), None),
             Duration::from_secs(1),
             SEARCH_STOP_GRACE,
         )
@@ -932,7 +1024,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let finished = wait_for_search(
             rx,
-            StopSearch(flag.clone()),
+            StopSearch(flag.clone(), None),
             Duration::ZERO,
             SEARCH_STOP_GRACE,
         )
@@ -964,7 +1056,7 @@ mod tests {
         });
         let result = wait_for_search(
             rx,
-            StopSearch(Arc::new(AtomicBool::new(false))),
+            StopSearch(Arc::new(AtomicBool::new(false)), None),
             Duration::from_secs(1),
             SEARCH_STOP_GRACE,
         )
@@ -987,7 +1079,13 @@ mod tests {
             tx.send(Move::Right).unwrap();
         });
         assert_eq!(
-            wait_for_search(rx, StopSearch(flag), Duration::ZERO, Duration::from_secs(1)).await,
+            wait_for_search(
+                rx,
+                StopSearch(flag, None),
+                Duration::ZERO,
+                Duration::from_secs(1)
+            )
+            .await,
             Some(Move::Right)
         );
         worker.await.unwrap();
