@@ -24,9 +24,9 @@ impl PreparedSearch {
     /// Preparation is charged to the request's existing deadline. Incomplete
     /// tactical passes retain their last complete horizon; a panic leaves the
     /// tactical filter absent and preserves the wire fallback if selection fails.
-    pub fn new(root: Arc<Node>, you: SnakeId, wire_moves: &ResponseMoves) -> Self {
+    pub fn new(root: Arc<Node>, you: SnakeId, wire_moves: &ResponseMoves, continued: bool) -> Self {
         let filter = catch_unwind(AssertUnwindSafe(|| {
-            root.tactical_root_filter(you, &Limits::default())
+            root.tactical_root_filter_with_continuation(you, &Limits::default(), continued)
         }))
         .ok();
         let fallback = catch_unwind(AssertUnwindSafe(|| {
@@ -48,6 +48,18 @@ impl PreparedSearch {
 
     pub fn fallback(&self) -> Move {
         self.moves.fallback
+    }
+
+    pub fn tactical_filter_applied(&self) -> bool {
+        self.filter.as_ref().is_some_and(|filter| filter.applied)
+    }
+
+    pub fn food_target(&self) -> Option<u8> {
+        self.root.food_target()
+    }
+
+    pub fn food_race(&self) -> Option<&lib::food_race::Assessment> {
+        self.root.root_food_race(self.you)
     }
 
     pub fn run(self, stop: Arc<AtomicBool>, publish: impl FnOnce(SearchResult)) {

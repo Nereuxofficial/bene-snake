@@ -1,0 +1,69 @@
+{
+  "positions": 679,
+  "searched_positions": 27,
+  "starvation_games": 3,
+  "score_changes": 574,
+  "root_assessment_exhaustions": 0,
+  "comparison": {
+    "root_advisor": "enabled in both arms",
+    "leaf_evaluation": "only changed search option",
+    "rollout_policy_and_food_gain_reward": "identical",
+    "fixed_iterations": 20000,
+    "fixed_iteration_seeds": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "equal_time_ms": 350,
+    "equal_time_workers": 12,
+    "equal_time_repeats": 4,
+    "equal_time_rng": "persistent worker RNG, not seed-controlled",
+    "alternating_order": true,
+    "time_includes": "root advice/preparation and search, excludes tactical proof and tree destruction"
+  },
+  "modes": {
+    "iterations": {
+      "complete_pairs": 108,
+      "decision_changes": 3,
+      "median_candidate_baseline_throughput": 0.6298904022785703,
+      "candidate_max_ms": 331.933743
+    },
+    "time": {
+      "complete_pairs": 108,
+      "decision_changes": 10,
+      "median_candidate_baseline_throughput": 0.7629946539767571,
+      "candidate_max_ms": 351.39977300000004
+    }
+  },
+  "leaf_eval_us": {
+    "median": 4.37,
+    "p99": 7.203,
+    "max": 10.191
+  },
+  "sources_sha256": {
+    "lib/src/eval.rs": "ea261db680496ac70ebee8d9ebc78bfd34095fae74282107876b733d3880f4e0",
+    "lib/src/mcts.rs": "8e22ede439c27bcb3b96f52f6c43306b6527cb166e8eed3f4c8c229ef641395f",
+    "lib/src/food_race.rs": "c91c4aed221739bdde9ecbccc46d779f26f1815526c44a41b396e2a7d4b7bf10",
+    "lib/fixtures/starvation-food-leaves.json": "210daaf477cf093768d2b130e763e99270aad2668eb4ad5751905db6cfc43af7"
+  },
+  "critical_turn_276": {
+    "old_board_score": 654,
+    "new_board_score": 594,
+    "old_food_distance": 5,
+    "new_effective_food_distance": 10,
+    "candidate_moves_fixed_iterations": [
+      "right",
+      "right",
+      "right",
+      "right"
+    ],
+    "candidate_moves_equal_time": [
+      "right",
+      "right",
+      "right",
+      "right"
+    ],
+    "starvation_prevention_demonstrated": false
+  }
+}

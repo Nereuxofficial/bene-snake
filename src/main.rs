@@ -4,6 +4,7 @@
 mod game_state;
 mod ponder;
 mod search;
+mod telemetry;
 
 use axum::body::{Body, Bytes, HttpBody};
 use axum::response::{IntoResponse, Response};
@@ -189,22 +190,58 @@ async fn deploy_ready() -> axum::http::StatusCode {
 }
 
 async fn get_move(body: String) -> Response {
-    get_move_with_search(body, |search, stop, result| {
-        search.run(stop, |outcome| {
-            // Send before telemetry and destruction of the unused tree.
-            let _ = result.send(outcome);
-        });
-    })
+    let trace = telemetry::MoveTrace::current();
+    let publication = trace.clone();
+    get_move_with_trace(
+        body,
+        move |search, stop, result| {
+            search.run(stop, |outcome| {
+                // Send before telemetry and destruction of the unused tree.
+                let accepted = result.send(outcome).is_ok();
+                publication.event(if accepted {
+                    "worker_result_published"
+                } else {
+                    "worker_result_receiver_dropped"
+                });
+            });
+        },
+        trace,
+    )
     .await
 }
 
+#[cfg(test)]
 async fn get_move_with_search(
     body: String,
     run_search: impl FnOnce(PreparedSearch, Arc<AtomicBool>, tokio::sync::oneshot::Sender<SearchResult>)
     + Send
     + 'static,
 ) -> Response {
+    get_move_with_trace(body, run_search, telemetry::MoveTrace::current()).await
+}
+
+async fn get_move_with_trace(
+    body: String,
+    run_search: impl FnOnce(PreparedSearch, Arc<AtomicBool>, tokio::sync::oneshot::Sender<SearchResult>)
+    + Send
+    + 'static,
+    trace: telemetry::MoveTrace,
+) -> Response {
+    let guard = trace.guard();
+    let response = compute_move(body, run_search, &trace).await;
+    guard.finish();
+    response
+}
+
+async fn compute_move(
+    body: String,
+    run_search: impl FnOnce(PreparedSearch, Arc<AtomicBool>, tokio::sync::oneshot::Sender<SearchResult>)
+    + Send
+    + 'static,
+    trace: &telemetry::MoveTrace,
+) -> Response {
     let start = std::time::Instant::now();
+    trace.phase("decoding");
     // Decoding only normalises the request and records it; the tree is untouched, so it
     // can happen before admission without racing the previous turn's search.
     let decoded = match decode_state(body) {
@@ -214,8 +251,12 @@ async fn get_move_with_search(
             return Json(json!({"move": Move::Up})).into_response();
         }
     };
+    trace.identify(&decoded.game_id, decoded.turn);
+    trace.phase("waiting_admission");
     let _admitted = tree_caches().admit(&decoded.game_id).await;
+    trace.phase("waiting_ponder_idle");
     tree_caches().wait_idle().await;
+    trace.phase("preparing_search");
     info!("Got move request for turn {}", decoded.turn);
     let fallback = decoded.response_moves.fallback;
     let Some(board) = decoded.board else {
@@ -235,7 +276,47 @@ async fn get_move_with_search(
         return Json(json!({"move": fallback})).into_response();
     };
     let carried_visits = root_node.visits();
-    let search = PreparedSearch::new(root_node, you, &decoded.response_moves);
+    let food_hint = GAME_STATES
+        .get()
+        .unwrap()
+        .lock()
+        .get(&decoded.game_id)
+        .filter(|state| Arc::ptr_eq(&state.search_generation, &decoded.search_generation))
+        .and_then(|state| state.food_target_history.hint(decoded.turn));
+    root_node.prefer_food_target(you, food_hint);
+    let continued = GAME_STATES
+        .get()
+        .unwrap()
+        .lock()
+        .get(&decoded.game_id)
+        .is_some_and(|state| {
+            Arc::ptr_eq(&state.search_generation, &decoded.search_generation)
+                && state.tactical_history.should_continue(decoded.turn)
+        });
+    let search = PreparedSearch::new(root_node, you, &decoded.response_moves, continued);
+    if let Some(race) = search.food_race() {
+        let target = search.food_target();
+        let chosen = race.foods.iter().find(|f| Some(f.cell) == target);
+        info!(game_id=%decoded.game_id,turn=decoded.turn,request_id=trace.id(),target=?target,
+            class=?chosen.map(|f|f.class), arrival=?chosen.and_then(|f|f.arrival),
+            rival=?chosen.and_then(|f|f.rival),rival_arrival=?chosen.and_then(|f|f.rival_arrival),
+            health_margin=?chosen.map(|f|f.health_margin),best_chance=race.best_chance,
+            budget_exhausted=race.budget_exhausted,expansions=race.expansions,"root food race prior");
+    }
+
+    {
+        let mut games = GAME_STATES.get().unwrap().lock();
+        if let Some(state) = games.get_mut(&decoded.game_id)
+            && Arc::ptr_eq(&state.search_generation, &decoded.search_generation)
+        {
+            state
+                .tactical_history
+                .observe(decoded.turn, search.tactical_filter_applied());
+            state
+                .food_target_history
+                .observe(decoded.turn, search.food_target());
+        }
+    }
     let fallback = search.fallback();
     let stop = StopSearch(Arc::new(AtomicBool::new(false)));
     let stop_for_search = Arc::clone(&stop.0);
@@ -245,10 +326,14 @@ async fn get_move_with_search(
     // The admitted handler already holds the per-game lock; this pause only has to outlive
     // the handler future, which may end while the worker is still stopping.
     let worker_foreground = tree_caches().pause();
+    let worker_trace = trace.clone();
     tokio::task::spawn_blocking(move || {
         // A cancelled handler may return while its foreground workers are stopping.
         let _foreground = worker_foreground;
-        let _span = tracing::info_span!("search", game_id = %game_id, turn).entered();
+        let _span =
+            tracing::info_span!("search", game_id = %game_id, turn, request_id = worker_trace.id())
+                .entered();
+        let _worker = worker_trace.worker_guard();
         run_search(search, stop_for_search, result_tx);
     });
     let budget = search_budget(decoded.timeout_ms, start.elapsed());
@@ -258,7 +343,9 @@ async fn get_move_with_search(
         .saturating_sub(start.elapsed())
         .saturating_sub(delivery_reserve);
     let grace = available.saturating_sub(budget).min(SEARCH_STOP_GRACE);
+    trace.phase("waiting_search");
     let outcome = wait_for_search(result_rx, stop, budget, grace).await;
+    trace.phase("building_response");
     let result_published = outcome.is_some();
     let mut chosen_move = fallback;
     let mut retained_candidates = 0;
@@ -278,7 +365,7 @@ async fn get_move_with_search(
             error!(game_id = %decoded.game_id, turn = decoded.turn, "Search worker failed or did not publish; using fallback");
         }
     }
-    info!(game_id = %decoded.game_id, turn = decoded.turn,
+    info!(game_id = %decoded.game_id, turn = decoded.turn, request_id = trace.id(),
         chosen_move = %chosen_move, elapsed = ?start.elapsed(), reused, carried_visits,
         retained_candidates, pondered_iterations, result_published, used_fallback, "MCTS move completed");
     let response = Json(json!({"move": chosen_move})).into_response();
@@ -428,7 +515,10 @@ async fn main() -> color_eyre::Result<()> {
     info!("Starting battle-snake server on http://{addr}");
     let app = Router::new()
         .route("/", get(info))
-        .route("/move", post(get_move))
+        .route(
+            "/move",
+            post(get_move).route_layer(axum::middleware::from_fn(telemetry::observe)),
+        )
         .route("/info", get(info))
         .route("/start", post(start))
         .route("/end", post(end))
@@ -779,18 +869,21 @@ mod tests {
     async fn cancelled_request_stops_its_blocking_worker() {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
-        let request = tokio::spawn(async move {
-            let stop = StopSearch(Arc::new(AtomicBool::new(false)));
-            let worker_stop = Arc::clone(&stop.0);
-            tokio::task::spawn_blocking(move || {
-                while !worker_stop.load(Ordering::Relaxed) {
+        let mut game: Game =
+            serde_json::from_str(include_str!("fixtures/68adaa6a-turn141.json")).unwrap();
+        game.game.id = "cancelled-move-handler".into();
+        let request = tokio::spawn(get_move_with_search(
+            serde_json::to_string(&game).unwrap(),
+            move |search, stop, result| {
+                let _search = search;
+                let _result = result;
+                let _ = ready_tx.send(());
+                while !stop.load(Ordering::Relaxed) {
                     std::thread::yield_now();
                 }
                 let _ = stopped_tx.send(());
-            });
-            let _ = ready_tx.send(());
-            std::future::pending::<()>().await;
-        });
+            },
+        ));
 
         ready_rx.await.unwrap();
         request.abort();

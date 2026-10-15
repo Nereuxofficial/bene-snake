@@ -20,7 +20,7 @@ use battlesnake_game_types::{
 use rand::{Rng, RngExt};
 use std::time::{Duration, Instant};
 
-use crate::eval::evaluate_board;
+use crate::eval::evaluate_board_with_food_races;
 use tracing::info;
 
 #[cfg(test)]
@@ -76,6 +76,7 @@ const UNIFORM_MOVE_PERCENT: u32 = 20;
 #[derive(Clone, Copy)]
 struct RolloutOptions {
     food_guidance: bool,
+    food_race_evaluation: bool,
     food_gain_reward: u32,
     depth: u32,
 }
@@ -158,6 +159,18 @@ fn move_policy(
     legal: u8,
     food: &[Position],
     food_guidance: bool,
+) -> MovePolicy {
+    move_policy_with_targeting(board, facts, snake, legal, food, food_guidance, false)
+}
+
+fn move_policy_with_targeting(
+    board: &CellBoard4Snakes11x11,
+    facts: &[SnakeFacts; 4],
+    snake: SnakeId,
+    legal: u8,
+    food: &[Position],
+    food_guidance: bool,
+    neutral_food: bool,
 ) -> MovePolicy {
     #[cfg(feature = "tracy")]
     let _tracy_span = tracy_client::span!("move_policy");
@@ -265,7 +278,9 @@ fn move_policy(
             // Mobility is only scored for surviving moves, so read it lazily rather than
             // inside `describe_move` where a fatal move would pay for four cell reads.
             weight += board.free_neighbor_count(target.destination) * 2;
-            if food_guidance {
+            if neutral_food {
+                // The root race advisor supplies the food target separately.
+            } else if food_guidance {
                 if has_food {
                     weight += if health <= 20 {
                         12
@@ -486,6 +501,12 @@ pub struct Node {
     board: CellBoard4Snakes11x11,
     escape_guard_enabled: bool,
     escape: OnceLock<(SnakeId, crate::escape::EscapeAnalysis)>,
+    food_races_enabled: bool,
+    food_race_evaluation: bool,
+    // Most tree nodes never become roots; keep the route diagnostics out of
+    // their inline footprint and allocate them only when preparing a root.
+    food_race: OnceLock<Box<RacePrior>>,
+    food_override: AtomicU64,
     food_guidance: bool,
     food_gain_reward: u32,
     rollout_depth: u32,
@@ -494,6 +515,12 @@ pub struct Node {
     visits: AtomicU32,
     own_moves: [MoveStats; 4],
     move_cache: OnceLock<NodeMoveCache>,
+}
+
+struct RacePrior {
+    assessment: crate::food_race::Assessment,
+    weights: [u8; 4],
+    target: Option<u8>,
 }
 
 /// A cached visit needs only its Arc; do not copy its board into the return value.
@@ -677,6 +704,8 @@ impl Node {
             self.rollout_depth,
         );
         snapshot.escape_guard_enabled = self.escape_guard_enabled;
+        snapshot.food_races_enabled = self.food_races_enabled;
+        snapshot.food_race_evaluation = self.food_race_evaluation;
         snapshot.tree_depth = self.tree_depth;
         snapshot.visits.store(self.visits(), Ordering::Relaxed);
         for (target, source) in snapshot.own_moves.iter().zip(&self.own_moves) {
@@ -717,6 +746,7 @@ impl Node {
     fn rollout_options(&self) -> RolloutOptions {
         RolloutOptions {
             food_guidance: self.food_guidance,
+            food_race_evaluation: self.food_race_evaluation,
             food_gain_reward: self.food_gain_reward,
             depth: self.rollout_depth,
         }
@@ -759,6 +789,10 @@ impl Node {
             board,
             escape_guard_enabled: true,
             escape: OnceLock::new(),
+            food_races_enabled: true,
+            food_race_evaluation: true,
+            food_race: OnceLock::new(),
+            food_override: AtomicU64::new(0),
             food_guidance,
             food_gain_reward,
             rollout_depth,
@@ -791,25 +825,115 @@ impl Node {
         root
     }
 
+    /// Isolate the root food-race prior in replay and equal-budget comparisons.
+    pub fn new_root_with_food_races(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
+        let mut root = Self::new_root(board);
+        root.food_races_enabled = enabled;
+        root
+    }
+
+    /// Compare leaf evaluation with identical root priors and rollout policies.
+    pub fn new_root_with_food_race_evaluation(board: CellBoard4Snakes11x11, enabled: bool) -> Self {
+        let mut root = Self::new_root(board);
+        root.food_race_evaluation = enabled;
+        root
+    }
+
     fn prepare_escape_guard(&self, you: SnakeId) {
         if !self.escape_guard_enabled {
             return;
         }
         self.escape.get_or_init(|| {
             let cache = self.move_cache();
+            let neutral = if self.food_races_enabled && self.food_guidance {
+                let facts = snake_facts_from_masks(&self.board, &cache.masks);
+                move_policy_with_targeting(
+                    &self.board,
+                    &facts,
+                    you,
+                    cache.tree_masks[you.as_usize()],
+                    &self.board.get_all_food_as_positions(),
+                    true,
+                    true,
+                )
+                .weights
+            } else {
+                cache.policies[you.as_usize()]
+            };
             (
                 you,
-                crate::escape::analyze(
+                crate::escape::analyze_with_neutral_policy(
                     &self.board,
                     you,
                     cache.tree_masks[you.as_usize()],
                     cache.policies[you.as_usize()],
+                    neutral,
                 ),
             )
         });
+        if self.food_races_enabled && self.food_guidance {
+            self.food_race.get_or_init(|| {
+                let escape = &self.escape.get().unwrap().1;
+                let assessment = crate::food_race::assess(
+                    &self.board,
+                    you,
+                    escape.mask,
+                    Some(Instant::now() + crate::food_race::TIME_LIMIT),
+                    crate::food_race::MAX_EXPANSIONS,
+                );
+                let (weights, target) = assessment
+                    .priors(escape.neutral_weights, self.board.get_health(&you), None)
+                    .map_or((escape.weights, None), |(w, t)| (w, Some(t)));
+                Box::new(RacePrior {
+                    assessment,
+                    weights,
+                    target,
+                })
+            });
+        }
+    }
+
+    /// Re-rank a cached assessment once while the root is idle. Only a soft
+    /// target hint persists; proof masks and other boards' routes are not reused.
+    pub fn prefer_food_target(&self, you: SnakeId, hint: Option<u8>) -> Option<u8> {
+        self.prepare_escape_guard(you);
+        let prior = self.food_race.get()?;
+        let escape = &self.escape.get().unwrap().1;
+        let (weights, target) = prior
+            .assessment
+            .priors(escape.neutral_weights, self.board.get_health(&you), hint)
+            .map_or((escape.weights, None), |(w, t)| (w, Some(t)));
+        let packed = u64::from(u32::from_le_bytes(weights))
+            | (u64::from(target.unwrap_or(255)) << 32)
+            | (1 << 40);
+        self.food_override.store(packed, Ordering::Relaxed);
+        target
+    }
+
+    pub fn root_food_race(&self, you: SnakeId) -> Option<&crate::food_race::Assessment> {
+        self.prepare_escape_guard(you);
+        self.food_race.get().map(|p| &p.assessment)
+    }
+
+    pub fn food_target(&self) -> Option<u8> {
+        let packed = self.food_override.load(Ordering::Relaxed);
+        if packed & (1 << 40) != 0 {
+            let target = (packed >> 32) as u8;
+            (target != 255).then_some(target)
+        } else {
+            self.food_race.get().and_then(|p| p.target)
+        }
     }
 
     fn selection_policy(&self, you: SnakeId) -> [u8; 4] {
+        if let Some(prior) = self.food_race.get() {
+            let packed = self.food_override.load(Ordering::Relaxed);
+            return if packed & (1 << 40) != 0 {
+                (packed as u32).to_le_bytes()
+            } else {
+                prior.weights
+            };
+        }
         self.escape.get().filter(|(id, _)| *id == you).map_or(
             self.move_cache().policies[you.as_usize()],
             |(_, analysis)| analysis.weights,
@@ -989,9 +1113,18 @@ impl Node {
         you: SnakeId,
         limits: &crate::tactical::Limits<'_>,
     ) -> crate::tactical::RootFilter {
+        self.tactical_root_filter_with_continuation(you, limits, false)
+    }
+
+    pub fn tactical_root_filter_with_continuation(
+        &self,
+        you: SnakeId,
+        limits: &crate::tactical::Limits<'_>,
+        continued: bool,
+    ) -> crate::tactical::RootFilter {
         self.prepare_escape_guard(you);
         let base = self.tree_own_mask(you).unwrap_or(0);
-        crate::tactical::root_filter(&self.board, you, base, limits)
+        crate::tactical::root_filter_with_continuation(&self.board, you, base, limits, continued)
     }
 
     fn choose_from_mask(&self, you: SnakeId, mask: u8) -> Option<Move> {
@@ -1071,6 +1204,8 @@ impl Node {
             self.rollout_depth,
         );
         child.tree_depth = self.tree_depth;
+        child.food_races_enabled = self.food_races_enabled;
+        child.food_race_evaluation = self.food_race_evaluation;
         let child = Arc::new(child);
         children.insert(key, Arc::clone(&child));
         ChildResult::Expanded(child)
@@ -1172,7 +1307,7 @@ fn rollout_from(
         WIN_REWARD
     } else {
         let gained = u32::from(board.get_length(you).saturating_sub(root_length));
-        let score = evaluate_board(&board, you);
+        let score = evaluate_board_with_food_races(&board, you, options.food_race_evaluation);
         (leaf_reward(score) + gained * options.food_gain_reward).min(WIN_REWARD - 1)
     }
 }
@@ -1548,6 +1683,36 @@ mod tests {
             reached_cap,
             "fixture must reach terminal starvation at the cap"
         );
+    }
+
+    #[test]
+    fn leaf_race_toggle_survives_children_and_retention_without_changing_root_advice() {
+        use battlesnake_game_types::types::SimulableGame;
+        let (board, you, _) = turn33();
+        let enabled = Node::new_root_with_food_race_evaluation(board, true);
+        let disabled = Node::new_root_with_food_race_evaluation(board, false);
+        assert_eq!(enabled.root_candidates(you), disabled.root_candidates(you));
+        for flag in [false, true] {
+            let root = Node::new_root_with_food_race_evaluation(board, flag);
+            let legal = board.reasonable_moves_for_each_snake();
+            let (action, _) = board.simulate_with_moves(&legal).next().unwrap();
+            let moves: ArrayVec<_, 4> = action
+                .into_inner()
+                .iter()
+                .enumerate()
+                .filter_map(|(id, mv)| mv.map(|mv| (SnakeId(id as u8), mv)))
+                .collect();
+            let ChildResult::Expanded(child) = root.child_for_action(&moves) else {
+                panic!("first child");
+            };
+            assert_eq!(child.rollout_options().food_race_evaluation, flag);
+            let mut retained = 0;
+            let snapshot = root.retained_snapshot(4, &mut retained);
+            assert_eq!(snapshot.rollout_options().food_race_evaluation, flag);
+            for child in snapshot.children.read().unwrap().values() {
+                assert_eq!(child.rollout_options().food_race_evaluation, flag);
+            }
+        }
     }
 
     #[test]

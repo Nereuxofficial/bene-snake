@@ -13,6 +13,8 @@ const MAX_STATES_PER_MOVE: usize = 2048;
 pub struct EscapeAnalysis {
     pub mask: u8,
     pub weights: [u8; 4],
+    /// Same space/exit preferences, without food attraction, for the race advisor.
+    pub neutral_weights: [u8; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -152,12 +154,30 @@ pub fn analyze(
     mask: u8,
     weights: [u8; 4],
 ) -> EscapeAnalysis {
+    analyze_with_neutral_policy(board, you, mask, weights, weights)
+}
+
+pub fn analyze_with_neutral_policy(
+    board: &CellBoard4Snakes11x11,
+    you: SnakeId,
+    mask: u8,
+    weights: [u8; 4],
+    neutral: [u8; 4],
+) -> EscapeAnalysis {
     if board.get_health(&you) == 0 {
-        return EscapeAnalysis { mask, weights };
+        return EscapeAnalysis {
+            mask,
+            weights,
+            neutral_weights: neutral,
+        };
     }
     let cells = board.get_snake_body_vec(&you);
     if cells.is_empty() || cells.len() >= 128 {
-        return EscapeAnalysis { mask, weights };
+        return EscapeAnalysis {
+            mask,
+            weights,
+            neutral_weights: neutral,
+        };
     }
     let mut body = Body {
         cells: [0; 128],
@@ -192,6 +212,7 @@ pub fn analyze(
     }
     let mut surviving = 0;
     let mut preferred = weights;
+    let mut neutral_weights = neutral;
     for mv in Move::all() {
         let index = mv.as_index();
         if mask & (1 << index) == 0 {
@@ -230,6 +251,9 @@ pub fn analyze(
                 .saturating_mul(factor)
                 .saturating_add(food_bonus)
                 .saturating_add(space.exits.min(3) * 2);
+            neutral_weights[index] = neutral_weights[index]
+                .saturating_mul(factor)
+                .saturating_add(space.exits.min(3) * 2);
         }
     }
     // Local exits are preferences, not survival proofs: two exits can both close
@@ -238,6 +262,7 @@ pub fn analyze(
     EscapeAnalysis {
         mask: if surviving == 0 { mask } else { surviving },
         weights: preferred,
+        neutral_weights,
     }
 }
 

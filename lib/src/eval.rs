@@ -1,3 +1,4 @@
+use crate::food_race::{RaceClass, assess_for_evaluation};
 use battlesnake_game_types::{
     compact_representation::standard::CellBoard4Snakes11x11,
     types::{FoodGettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame, SnakeId},
@@ -11,6 +12,15 @@ fn manhattan_distance(a: &Position, b: &Position) -> i32 {
 
 /// Score a board using health, length, mobility, food distance and opponent geometry.
 pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
+    evaluate_board_with_food_races(cellboard, you, true)
+}
+
+/// Isolate leaf food scoring for controlled comparisons. Root advice is independent.
+pub fn evaluate_board_with_food_races(
+    cellboard: &CellBoard4Snakes11x11,
+    you: &SnakeId,
+    food_races: bool,
+) -> u16 {
     let food_positions = cellboard.get_all_food_as_positions();
     let health = cellboard.get_health(you);
     if health == 0 {
@@ -39,13 +49,19 @@ pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
 
     let head_pos = cellboard.get_head_as_position(you);
 
-    // 4. Food distance, at every health level.
-    if let Some(min_food_dist) = food_positions
+    // Replace the Manhattan lure with a bounded static race estimate. Recompute
+    // on this leaf: a root's target and arrival order do not describe future boards.
+    let legacy_distance = food_positions
         .iter()
         .map(|food| manhattan_distance(&head_pos, food))
-        .min()
-    {
-        score -= min_food_dist * 12;
+        .min();
+    let food_distance = if food_races && legacy_distance.is_some() {
+        race_food_distance(cellboard, *you).or(legacy_distance)
+    } else {
+        legacy_distance
+    };
+    if let Some(distance) = food_distance {
+        score -= distance * 12;
     }
 
     // 5. Opponent awareness - avoid dangerous head-to-head collisions
@@ -78,6 +94,39 @@ pub fn evaluate_board(cellboard: &CellBoard4Snakes11x11, you: &SnakeId) -> u16 {
     score.max(1).min(u16::MAX as i32) as u16
 }
 
+/// Costs are in equivalent food-distance steps. An adverse race still has a
+/// distance gradient when every meal is contested; it is never a death verdict.
+/// Uncertain routes receive a smaller discount than a confidently lost race.
+fn race_food_distance(board: &CellBoard4Snakes11x11, you: SnakeId) -> Option<i32> {
+    let mask = board.reasonable_move_mask(board.get_head_as_native_position(&you));
+    // Deterministic work limit, with no clock reads on the rollout hot path.
+    let assessment = assess_for_evaluation(board, you, mask);
+    if assessment.budget_exhausted {
+        return None;
+    }
+    let head = board.get_head_as_position(&you);
+    assessment
+        .foods
+        .iter()
+        .map(|food| {
+            let distance = food.arrival.map(i32::from).unwrap_or_else(|| {
+                (head.x - i32::from(food.cell % 11)).abs()
+                    + (head.y - i32::from(food.cell / 11)).abs()
+            });
+            let penalty = match food.class {
+                RaceClass::Favourable => 0,
+                RaceClass::Contested => 2,
+                RaceClass::Unknown => 6,
+                RaceClass::LikelyLost => 8,
+                RaceClass::BeyondHealth => 12,
+            };
+            // Bound the feature so static pessimism cannot overwhelm all other
+            // live-leaf terms. Terminal rewards are handled separately by MCTS.
+            (distance + penalty).min(40)
+        })
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +146,28 @@ mod tests {
         let ids = build_snake_id_map(&game);
         let you = ids[&game.you.id];
         (game.as_cell_board(&ids).unwrap(), you)
+    }
+
+    #[test]
+    fn recent_starvation_leaves_replace_the_recorded_manhattan_lure() {
+        let games: Vec<Game> =
+            serde_json::from_str(include_str!("../fixtures/starvation-food-leaves.json")).unwrap();
+        // Recorded positions from each starvation replay, with dead snakes removed.
+        for (game, expected) in games.iter().zip([(486, 462), (535, 343), (654, 594)]) {
+            let ids = build_snake_id_map(game);
+            let board = game.as_cell_board(&ids).unwrap();
+            let you = ids[&game.you.id];
+            assert_eq!(
+                evaluate_board_with_food_races(&board, &you, false),
+                expected.0
+            );
+            assert_eq!(evaluate_board(&board, &you), expected.1);
+            if game.turn == 276 {
+                // Five steps to the longer rival's meal (8,1), ten to the
+                // favourable alternative (2,10): select the ten-step cost.
+                assert_eq!(race_food_distance(&board, you), Some(10));
+            }
+        }
     }
 
     #[test]
@@ -197,12 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn food_distance_weight_is_independent_of_health() {
+    fn legacy_food_distance_weight_is_independent_of_health() {
         let distance_delta = |health| {
             let (close_board, you) = board_with_food(health, Position::new(9, 9));
             let (far_board, _) = board_with_food(health, Position::new(0, 0));
-            i32::from(evaluate_board(&close_board, &you))
-                - i32::from(evaluate_board(&far_board, &you))
+            i32::from(evaluate_board_with_food_races(&close_board, &you, false))
+                - i32::from(evaluate_board_with_food_races(&far_board, &you, false))
         };
         let expected = distance_delta(100);
         assert!(expected > 0);

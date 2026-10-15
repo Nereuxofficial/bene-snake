@@ -13,6 +13,8 @@ pub struct GameState {
     pub touched: Instant,
     pub search_turn: i32,
     pub search_generation: Arc<()>,
+    pub tactical_history: lib::tactical::TriggerHistory,
+    pub food_target_history: lib::food_race::TargetHistory,
 }
 
 impl GameState {
@@ -34,6 +36,8 @@ impl GameState {
             touched: Instant::now(),
             search_turn: game.turn,
             search_generation: Arc::new(()),
+            tactical_history: lib::tactical::TriggerHistory::default(),
+            food_target_history: lib::food_race::TargetHistory::default(),
         }
     }
 

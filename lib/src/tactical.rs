@@ -267,6 +267,34 @@ pub const TRIGGER_DISTANCE: usize = 4;
 /// Physical-exit count at or below which the root check triggers.
 pub const TRIGGER_EXITS: u32 = 2;
 
+/// Continue checking the next three turns after pruning an exposed alternative.
+/// Only activation is retained: every board receives a new bounded proof.
+pub const TRIGGER_CONTINUATION_TURNS: i32 = 3;
+
+#[derive(Default)]
+pub struct TriggerHistory {
+    last_filtered_turn: Option<i32>,
+}
+
+impl TriggerHistory {
+    pub fn should_continue(&self, turn: i32) -> bool {
+        self.last_filtered_turn.is_some_and(|previous| {
+            turn.checked_sub(previous)
+                .is_some_and(|distance| (1..=TRIGGER_CONTINUATION_TURNS).contains(&distance))
+        })
+    }
+
+    pub fn observe(&mut self, turn: i32, applied: bool) {
+        if applied
+            && self
+                .last_filtered_turn
+                .is_none_or(|previous| turn > previous)
+        {
+            self.last_filtered_turn = Some(turn);
+        }
+    }
+}
+
 /// A bounded decision the search root may apply from the tactical diagnostic (task B2).
 ///
 /// Computed once per search root and passed into selection. It is deliberately not
@@ -280,6 +308,8 @@ pub struct RootFilter {
     pub applied: bool,
     /// True when the duel/corridor trigger conditions held.
     pub triggered: bool,
+    /// Activation carried from a recent turn; never a reused proof or move mask.
+    pub continued: bool,
     /// Number of living opponents at the root.
     pub opponent_count: usize,
     /// The analysis, present only when the trigger held.
@@ -294,6 +324,7 @@ impl RootFilter {
             mask,
             applied: false,
             triggered: false,
+            continued: false,
             opponent_count: 0,
             analysis: None,
         }
@@ -315,6 +346,16 @@ pub fn root_filter(
     base_mask: u8,
     limits: &Limits<'_>,
 ) -> RootFilter {
+    root_filter_with_continuation(board, you, base_mask, limits, false)
+}
+
+pub fn root_filter_with_continuation(
+    board: &CellBoard4Snakes11x11,
+    you: SnakeId,
+    base_mask: u8,
+    limits: &Limits<'_>,
+    continued: bool,
+) -> RootFilter {
     let head = board.get_head_as_native_position(&you);
     let our_length = board.get_length(&you);
     let mut opponent_count = 0usize;
@@ -333,12 +374,13 @@ pub fn root_filter(
         }
     }
     let exits = board.reasonable_move_mask(head).count_ones();
-    let triggered = rival_close || exits <= TRIGGER_EXITS;
+    let triggered = continued || rival_close || exits <= TRIGGER_EXITS;
     if !triggered {
         return RootFilter {
             mask: base_mask,
             applied: false,
             triggered: false,
+            continued,
             opponent_count,
             analysis: None,
         };
@@ -373,6 +415,7 @@ pub fn root_filter(
         mask,
         applied,
         triggered,
+        continued,
         opponent_count,
         analysis: Some(analysis),
     }
@@ -392,6 +435,7 @@ pub fn log_root_filter(filter: &RootFilter, selection_changed: bool) {
     match &filter.analysis {
         Some(analysis) => tracing::info!(
             triggered = filter.triggered,
+            continued = filter.continued,
             opponents = filter.opponent_count,
             applied = filter.applied,
             selection_changed,
@@ -403,6 +447,7 @@ pub fn log_root_filter(filter: &RootFilter, selection_changed: bool) {
         ),
         None => tracing::info!(
             triggered = filter.triggered,
+            continued = filter.continued,
             opponents = filter.opponent_count,
             applied = false,
             selection_changed = false,
@@ -1259,6 +1304,77 @@ mod tests {
         assert!(!filter.applied);
         assert_eq!(filter.mask, base);
         assert!(filter.analysis.is_none());
+    }
+
+    #[test]
+    fn continuation_recomputes_the_recorded_turn244_escape() {
+        let games: Vec<Game> = serde_json::from_str(include_str!(
+            "../fixtures/tactical-continuation-6a02f94d.json"
+        ))
+        .unwrap();
+        let mut history = TriggerHistory::default();
+        for game in games.iter().take(3) {
+            let ids = build_snake_id_map(game);
+            let you = ids[&game.you.id];
+            let root = crate::mcts::Node::new_root(game.as_cell_board(&ids).unwrap());
+            let limits = Limits {
+                deadline: None,
+                ..Limits::default()
+            };
+            let filter = root.tactical_root_filter_with_continuation(
+                you,
+                &limits,
+                history.should_continue(game.turn),
+            );
+            assert!(filter.applied, "turn {}", game.turn);
+            if game.turn == 244 {
+                assert!(!root.tactical_root_filter(you, &limits).triggered);
+                assert!(filter.continued);
+                assert_eq!(filter.mask, 1 << Move::Up.as_index());
+                assert_eq!(
+                    root.best_move_with_root_filter(you, Some(&filter)),
+                    Some(Move::Up)
+                );
+                assert_eq!(
+                    root.guarded_fallback(you, Some(&filter), [true; 4]),
+                    Some(Move::Up)
+                );
+                assert!(filter.analysis.as_ref().unwrap().simulator_calls <= 20_000);
+            }
+            history.observe(game.turn, filter.applied);
+        }
+        // Activation survives; the previous turn's Up mask must not survive.
+        let game = &games[3];
+        let ids = build_snake_id_map(game);
+        let you = ids[&game.you.id];
+        let root = crate::mcts::Node::new_root(game.as_cell_board(&ids).unwrap());
+        let filter = root.tactical_root_filter_with_continuation(
+            you,
+            &Limits {
+                deadline: None,
+                ..Limits::default()
+            },
+            history.should_continue(game.turn),
+        );
+        assert_ne!(filter.mask, 1 << Move::Up.as_index());
+    }
+
+    #[test]
+    fn continuation_expires_without_rearming_on_safe_or_old_turns() {
+        let mut history = TriggerHistory::default();
+        history.observe(243, true);
+        assert!(!history.should_continue(243));
+        for turn in 244..=246 {
+            assert!(history.should_continue(turn));
+        }
+        history.observe(245, false);
+        history.observe(100, true);
+        assert!(!history.should_continue(247));
+        assert!(!history.should_continue(242));
+        assert!(!history.should_continue(i32::MIN));
+        history.observe(246, true);
+        assert!(history.should_continue(249));
+        assert!(!history.should_continue(250));
     }
 
     #[test]
